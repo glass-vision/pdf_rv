@@ -1,0 +1,2101 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF Document Reports</title>
+  <link rel="stylesheet" href="/static/styles.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/landing.css?v={{ static_version }}">
+  <script src="/static/browser_state.js?v={{ static_version }}"></script>
+  <script src="/static/ref_labels.js?v={{ static_version }}"></script>
+</head>
+<body>
+
+  <div id="loadingOverlay" class="loading-overlay">
+    <div class="loading-box">
+      <div class="spinner"></div>
+      <span id="loadingMsg">กำลังโหลด…</span>
+    </div>
+  </div>
+
+  <main class="workbench landing-workbench">
+    <header class="page-header landing-header">
+      <div>
+        <p class="eyebrow">Document Workspace</p>
+        <h1>ค้นหาและจัดการเอกสาร</h1>
+        <p class="subtle">เริ่มจาก Voucher Number เพื่อดูเอกสารที่เชื่อมโยงกัน</p>
+      </div>
+      <nav aria-label="Utility navigation">
+        <a href="/docs" target="_blank" rel="noreferrer">API Docs</a>
+      </nav>
+    </header>
+
+    <section class="panel search-panel landing-primary-search" aria-labelledby="landingSearchTitle">
+      <div class="search-panel-heading">
+        <div>
+          <h2 id="landingSearchTitle">ค้นหา Receive Voucher</h2>
+          <p class="subtle">กรอก Voucher Number หรือเว้นว่างเพื่อดูทั้งหมด</p>
+        </div>
+        <span class="primary-task-badge">งานหลัก / Primary</span>
+      </div>
+      <form id="searchForm">
+        <div class="search-row">
+          <input
+            type="text"
+            id="voucherNumber"
+            class="search-input"
+            placeholder="ค้นหา Voucher Number… เช่น QR2508-00001"
+            autocomplete="off"
+          >
+          <span class="visually-hidden">Search by the root Voucher Number only</span>
+        </div>
+        <details class="inner-accordion" id="advancedPanel">
+          <summary>ตัวกรองเพิ่มเติม / Advanced filters</summary>
+          <div class="filters-grid">
+            <label>
+              วันที่ตั้งแต่
+              <input type="date" id="dateFrom">
+            </label>
+            <label>
+              วันที่ถึง
+              <input type="date" id="dateTo">
+            </label>
+            <label>
+              Ref Type
+              <select id="refType">
+                <option value="">-</option>
+                <option value="invoice_no">Invoice No.</option>
+                <option value="bank_code">Bank Code</option>
+                <option value="bank_account_no">Bank Account No.</option>
+                <option value="check_no">Check No.</option>
+                <option value="bill_no">Bill No.</option>
+                <option value="customer_code">Customer Code</option>
+                <option value="journal_name">Journal Name</option>
+              </select>
+            </label>
+            <label>
+              Ref Value
+              <input type="text" id="refValue" placeholder="เช่น KBANK">
+            </label>
+            <label>
+              Mapping Status
+              <select id="mapStatus">
+                <option value="">ทั้งหมด / All</option>
+                <option value="complete">ครบถึงธนาคาร / Complete</option>
+                <option value="incomplete">ยังไม่ครบ / Incomplete</option>
+              </select>
+            </label>
+          </div>
+        </details>
+
+        <div class="search-actions">
+          <button type="submit" id="searchBtn">ค้นหา / Search</button>
+          <button type="button" id="exportBtn" class="secondary">Export PDF</button>
+        </div>
+      </form>
+    </section>
+
+    <div class="landing-layout">
+      <section class="landing-results" aria-label="ผลลัพธ์และเอกสารที่เชื่อมโยง">
+        <div class="landing-section-label">
+          <span>ผลลัพธ์ / Search workspace</span>
+          <span class="subtle">Mapping, Tree View และ JSON</span>
+        </div>
+
+    <details class="panel accordion chain-map-panel" id="chainMapAccordion">
+      <summary>
+        <h2>มุมมองการเชื่อมโยง / Mapping View</h2>
+        <span id="chainMapCount" class="subtle summary-status"></span>
+      </summary>
+      <div id="chainMap" class="chain-map" aria-live="polite">
+        <div class="chain-empty">ยังไม่ได้ค้นหา</div>
+      </div>
+    </details>
+
+    <details class="panel accordion chain-tree-panel" id="chainTreeAccordion">
+      <summary>
+        <h2>มุมมองแบบต้นไม้ / Tree View</h2>
+        <span id="chainTreeCount" class="subtle summary-status"></span>
+      </summary>
+      <div id="chainTree" class="chain-tree" aria-live="polite">
+        <div class="chain-empty">ยังไม่ได้ค้นหา</div>
+      </div>
+    </details>
+
+    <details class="panel accordion chain-json-panel" id="chainJsonAccordion">
+      <summary>
+        <h2>มุมมองแบบ JSON / JSON View</h2>
+        <span id="chainJsonCount" class="subtle summary-status"></span>
+      </summary>
+      <div class="history-toolbar">
+        <span class="subtle">คัดลอก JSON ปัจจุบันไปใช้ตรวจความครบของ chain</span>
+        <button id="copyJsonBtn" type="button" class="secondary-btn history-refresh-btn">Copy JSON</button>
+      </div>
+      <div class="chain-json-wrap">
+        <div id="chainJson" class="chain-json-output">ยังไม่ได้ค้นหา</div>
+      </div>
+    </details>
+      </section>
+
+      <aside class="landing-tools" aria-label="เครื่องมือเอกสาร">
+        <div class="landing-section-label">
+          <span>เครื่องมือ / Tools</span>
+          <span class="subtle">งานรอง</span>
+        </div>
+
+    <details id="universalUploadAccordion" class="panel accordion tool-panel">
+      <summary>
+        <span class="tool-summary-copy">
+          <strong>อัปโหลด PDF</strong>
+          <small>ระบบแยกประเภทจากชื่อไฟล์</small>
+        </span>
+      </summary>
+      <section class="universal-upload" aria-labelledby="universalUploadTitle">
+        <div class="universal-upload-heading">
+          <div>
+            <h2 id="universalUploadTitle">อัปโหลดเอกสารรวม / Universal Upload</h2>
+            <p class="subtle">ลากไฟล์ PDF มาวาง หรือกดเลือกไฟล์ แล้วระบบจะแยกประเภทให้</p>
+          </div>
+            <span class="upload-rule-note">ชื่อไฟล์เท่านั้น / Filename only</span>
+        </div>
+
+        <div class="upload-layout">
+          <input id="universalFileInput" class="visually-hidden" type="file" accept=".pdf,application/pdf" multiple>
+
+          <label id="universalDropzone" class="universal-dropzone" for="universalFileInput" tabindex="0">
+            <strong>ลากไฟล์ PDF มาวางตรงนี้ หรือคลิกเพื่อเลือกไฟล์</strong>
+            <span>Drag and drop PDF files here, or browse files</span>
+            <span class="button-like">เลือกไฟล์ / Browse files</span>
+          </label>
+        </div>
+
+        <div id="selectedFilesPanel" class="selected-files-panel" hidden>
+          <div class="selected-files-title">
+            <h2>ไฟล์ที่เลือก / Selected Files</h2>
+            <span id="selectedFileCount" class="subtle"></span>
+          </div>
+          <div class="selected-files-summary" aria-label="Upload status summary">
+            <span class="summary-pill is-ready"><strong id="selectedReadyCount">0</strong> พร้อม / Ready</span>
+            <span class="summary-pill is-active"><strong id="selectedRunningCount">0</strong> กำลังทำงาน / Running</span>
+            <span class="summary-pill is-done"><strong id="selectedDoneCount">0</strong> สำเร็จ / Done</span>
+            <span class="summary-pill is-failed"><strong id="selectedFailedCount">0</strong> ต้องตรวจสอบ / Needs attention</span>
+          </div>
+          <div id="selectedFilesList" class="selected-files-list"></div>
+          <div class="universal-actions">
+            <button id="clearFilesBtn" type="button" class="secondary-btn">ยกเลิก / Clear</button>
+            <button id="uploadAllBtn" type="button">อัปโหลดทั้งหมด / Upload all</button>
+          </div>
+        </div>
+
+        <details class="inner-accordion upload-history-accordion" id="uploadHistoryAccordion">
+          <summary>ประวัติการอัปโหลด / Upload History</summary>
+          <div class="history-panel">
+            <div class="history-toolbar">
+              <span class="subtle">รายการงานที่เพิ่งจบหรือยังค้างอยู่</span>
+              <button id="refreshHistoryBtn" type="button" class="secondary-btn history-refresh-btn">รีเฟรช / Refresh</button>
+            </div>
+            <div id="uploadHistoryList" class="history-list">
+              <div class="history-empty">กำลังโหลดประวัติ… / Loading history…</div>
+            </div>
+          </div>
+        </details>
+      </section>
+    </details>
+
+    <details class="panel accordion tool-panel" id="quickAccessAccordion">
+      <summary>
+        <span class="tool-summary-copy">
+          <strong>ทางลัด / Quick Access</strong>
+          <small>{{ doc_types | length }} หน้ารายงาน</small>
+        </span>
+      </summary>
+      <nav class="quick-access-nav" aria-label="Document types">
+        {% for doc in doc_types %}
+        <a class="quick-access-link" href="{{ doc.url }}">{{ doc.label }}</a>
+        {% endfor %}
+      </nav>
+    </details>
+      </aside>
+    </div>
+
+  </main>
+
+<script>
+const sessionStorage = PdfRvState.storage;
+const clientId = PdfRvState.getClientId();
+const CANCELLED_MESSAGE = "Cancelled by user";
+
+const overlay = document.getElementById("loadingOverlay");
+const loadingMsg = document.getElementById("loadingMsg");
+const landingStateKey = PdfRvState.key("landing", "state");
+const navigationType = performance.getEntriesByType("navigation")[0]?.type || "navigate";
+const landingStateFields = ["voucherNumber", "dateFrom", "dateTo", "refType", "refValue", "mapStatus"];
+const chainApiBase = "/api/workspace/chain";
+
+function readLandingState() {
+  try {
+    return JSON.parse(sessionStorage.getItem(landingStateKey) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function captureLandingState() {
+  const state = readLandingState();
+  for (const id of landingStateFields) {
+    state[id] = document.getElementById(id).value;
+  }
+  state.advancedOpen = document.getElementById("advancedPanel").open;
+  state.chainMapOpen = document.getElementById("chainMapAccordion").open;
+  state.chainTreeOpen = document.getElementById("chainTreeAccordion").open;
+  state.chainJsonOpen = document.getElementById("chainJsonAccordion").open;
+  state.uploadOpen = document.getElementById("universalUploadAccordion").open;
+  state.historyOpen = document.getElementById("uploadHistoryAccordion").open;
+  state.quickAccessOpen = document.getElementById("quickAccessAccordion").open;
+  return state;
+}
+
+function saveLandingState(extra = {}) {
+  sessionStorage.setItem(landingStateKey, JSON.stringify({ ...captureLandingState(), ...extra }));
+}
+
+function clientFetch(input, init = {}) {
+  const headers = new Headers(init.headers || {});
+  headers.set("X-Client-Id", clientId);
+  return fetch(input, { ...init, headers });
+}
+
+function restoreLandingState() {
+  const state = readLandingState();
+  const shouldRestore = navigationType === "back_forward";
+  for (const id of landingStateFields) {
+    document.getElementById(id).value = shouldRestore && state[id] != null ? state[id] : "";
+  }
+  document.getElementById("advancedPanel").open = shouldRestore && Boolean(state.advancedOpen);
+  document.getElementById("chainMapAccordion").open = shouldRestore && Boolean(state.chainMapOpen);
+  document.getElementById("chainTreeAccordion").open = shouldRestore && Boolean(state.chainTreeOpen);
+  document.getElementById("chainJsonAccordion").open = shouldRestore && Boolean(state.chainJsonOpen);
+  document.getElementById("universalUploadAccordion").open = shouldRestore && Boolean(state.uploadOpen);
+  document.getElementById("uploadHistoryAccordion").open = shouldRestore && Boolean(state.historyOpen);
+  document.getElementById("quickAccessAccordion").open = shouldRestore && Boolean(state.quickAccessOpen);
+  return state;
+}
+
+const landingState = restoreLandingState();
+let pageActive = true;
+let latestChainPayload = Array.isArray(landingState.cachedChain) ? landingState.cachedChain : [];
+
+window.addEventListener("pagehide", () => {
+  pageActive = false;
+  saveLandingState();
+});
+
+window.addEventListener("pageshow", (event) => {
+  pageActive = true;
+  if (event.persisted) {
+    void resumeSavedUploads();
+  }
+});
+
+function showLoading(msg) {
+  loadingMsg.textContent = msg || "กำลังโหลด… / Loading…";
+  overlay.classList.add("active");
+}
+
+function hideLoading() {
+  overlay.classList.remove("active");
+}
+
+function makePdfLink(url, label, className = "") {
+  const link = document.createElement("a");
+  link.href = `${url}#page=1&zoom=100`;
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.className = `pdf-action-link ${className}`.trim();
+  link.textContent = label;
+  return link;
+}
+
+function buildQuery() {
+  const params = new URLSearchParams();
+  const voucherNumber = document.getElementById("voucherNumber").value.trim();
+  const dateFrom = document.getElementById("dateFrom").value;
+  const dateTo = document.getElementById("dateTo").value;
+  const refType = document.getElementById("refType").value;
+  const refValue = document.getElementById("refValue").value.trim();
+  if (voucherNumber) params.set("voucher_number", voucherNumber);
+  if (dateFrom) params.set("date_from", dateFrom);
+  if (dateTo) params.set("date_to", dateTo);
+  if (refType && refValue) {
+    params.set("ref_type", refType);
+    params.set("ref_value", refValue);
+  }
+  return params;
+}
+
+async function parseResponse(res) {
+  const ct = res.headers.get("content-type") || "";
+  return ct.includes("application/json") ? res.json() : { detail: await res.text() };
+}
+
+function makeCell(value) {
+  const td = document.createElement("td");
+  td.textContent = value ?? "";
+  return td;
+}
+
+function setSummaryStatus(id, text, tone = "ready") {
+  const el = document.getElementById(id);
+  el.textContent = text || "";
+  el.classList.remove("summary-status-ready", "summary-status-empty", "summary-status-warning");
+  if (text) el.classList.add(`summary-status-${tone}`);
+}
+
+function pulseSummaryStatus(id) {
+  const el = document.getElementById(id);
+  if (!el || !el.textContent.trim()) return;
+  el.classList.remove("summary-status-pulse");
+  void el.offsetWidth;
+  el.classList.add("summary-status-pulse");
+}
+
+function renderMessage(msg) {
+  const body = document.getElementById("resultsBody");
+  body.innerHTML = "";
+  const tr = document.createElement("tr");
+  const td = makeCell(msg);
+  td.colSpan = 6;
+  td.className = "empty-msg";
+  tr.appendChild(td);
+  body.appendChild(tr);
+  setSummaryStatus("resultCount", "");
+}
+
+
+function renderRows(rows) {
+  const body = document.getElementById("resultsBody");
+  body.innerHTML = "";
+  if (!Array.isArray(rows) || rows.length === 0) {
+    renderMessage("No matching Voucher Number. Search by the root Voucher Number, not the filename.");
+    setSummaryStatus("resultCount", "ค้นหาเสร็จแล้ว • 0 รายการ", "empty");
+    return;
+  }
+
+  setSummaryStatus("resultCount", `ค้นหาเสร็จแล้ว • ${rows.length} รายการ`, "ready");
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    tr.className = "result-row";
+
+    tr.appendChild(makeCell(row.voucher_number));
+    tr.appendChild(makeCell(row.voucher_date));
+    tr.appendChild(makeCell(row.name));
+    const refsCell = document.createElement("td");
+    refsCell.className = "refs-cell";
+    refsCell.appendChild(makeStructuredRefsCell(row.refs || {}, row.bank_rows || []));
+    tr.appendChild(refsCell);
+    tr.appendChild(makeCell(row.assembled_page_count));
+
+    const pdfUrl = `/api/receive-vouchers/${encodeURIComponent(row.voucher_number)}.pdf`;
+    const actionCell = document.createElement("td");
+    const viewLink = makePdfLink(
+      pdfUrl,
+      `เปิด PDF Voucher • ${row.assembled_page_count || 0} หน้า`,
+      "view-btn"
+    );
+    actionCell.appendChild(viewLink);
+    tr.appendChild(actionCell);
+    tr.classList.add("pdf-link-row");
+    body.appendChild(tr);
+  }
+}
+
+function renderChainPreview(chains) {
+  const preview = document.getElementById("chainPreview");
+  preview.innerHTML = "";
+
+  if (!Array.isArray(chains) || chains.length === 0) {
+    setSummaryStatus("chainPreviewCount", "ค้นหาเสร็จแล้ว • ไม่พบ chain", "empty");
+    const empty = document.createElement("div");
+    empty.className = "chain-empty";
+    empty.textContent = "ยังไม่พบ chain";
+    preview.appendChild(empty);
+    return;
+  }
+
+  const totalPages = chains.reduce((sum, chain) => sum + Number(chain?.chain_page_count || 0), 0);
+  const invoiceCount = chains.reduce((sum, chain) => {
+    const bridges = Array.isArray(chain?.invoice_bridges) ? chain.invoice_bridges : [];
+    return sum + bridges.filter((bridge) => bridge && bridge.resolved).length;
+  }, 0);
+  const unresolvedCount = chains.reduce((sum, chain) => {
+    return sum + (Array.isArray(chain?.unresolved_invoice_refs) ? chain.unresolved_invoice_refs.length : 0);
+  }, 0);
+  setSummaryStatus(
+    "chainPreviewCount",
+    totalPages > 0
+      ? `ค้นหาเสร็จแล้ว • ${chains.length} ชุดเอกสาร • ${totalPages} หน้า`
+      : `ค้นหาเสร็จแล้ว • ${chains.length} ชุดเอกสาร`,
+    "ready"
+  );
+
+  const summary = document.createElement("div");
+  summary.className = "chain-preview-summary";
+  const title = document.createElement("strong");
+  title.textContent = "สรุปเชนเอกสาร / Chain summary";
+  const meta = document.createElement("span");
+  meta.textContent = makeChainMeta([
+    `${chains.length} vouchers`,
+    `${invoiceCount} invoices`,
+    totalPages > 0 ? `${totalPages} pages` : "",
+    unresolvedCount > 0 ? `${unresolvedCount} unresolved` : "",
+  ]);
+  summary.append(title, meta);
+  preview.appendChild(summary);
+
+  const scroll = document.createElement("div");
+  scroll.className = "table-scroll chain-preview-scroll";
+  const table = document.createElement("table");
+  table.className = "chain-preview-table";
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>Voucher</th>
+        <th>Invoices</th>
+        <th>Credit Memos</th>
+        <th>หน้า</th>
+        <th>สถานะ</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  `;
+  const tbody = table.querySelector("tbody");
+
+  for (const chain of chains) {
+    const resolvedInvoices = Array.isArray(chain.invoice_bridges)
+      ? chain.invoice_bridges.filter((bridge) => bridge && bridge.resolved && bridge.invoice)
+      : [];
+    const memoCount = resolvedInvoices.reduce((sum, bridge) => {
+      return sum + (Array.isArray(bridge.invoice.credit_memos) ? bridge.invoice.credit_memos.length : 0);
+    }, 0);
+    const unresolved = Array.isArray(chain.unresolved_invoice_refs) ? chain.unresolved_invoice_refs : [];
+    const invoiceSamples = resolvedInvoices.slice(0, 3).map((bridge) => bridge.ref_value);
+    const invoiceText = invoiceSamples.length > 0
+      ? `${invoiceSamples.join(", ")}${resolvedInvoices.length > invoiceSamples.length ? ` +${resolvedInvoices.length - invoiceSamples.length}` : ""}`
+      : "-";
+
+    const tr = document.createElement("tr");
+    tr.className = "chain-preview-row";
+    tr.append(
+      makeCell(chain.voucher_number || ""),
+      makeCell(invoiceText),
+      makeCell(memoCount || "-"),
+      makeCell(Number.isFinite(chain.chain_page_count) ? chain.chain_page_count : ""),
+      makeCell(unresolved.length > 0 ? `${unresolved.length} unresolved` : "Linked")
+    );
+
+    const actionCell = document.createElement("td");
+    if (chain.chain_pdf_url) {
+      actionCell.appendChild(makePdfLink(
+        chain.chain_pdf_url,
+        `เปิด PDF รวม • ${chain.chain_page_count || 0} หน้า`,
+        "secondary-btn chain-preview-btn"
+      ));
+    }
+    tr.appendChild(actionCell);
+    tbody.appendChild(tr);
+  }
+
+  scroll.appendChild(table);
+  preview.appendChild(scroll);
+}
+
+function formatChainDate(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.length === 10 && text[4] === "-" && text[7] === "-") {
+    return `${text.slice(8, 10)}/${text.slice(5, 7)}/${text.slice(0, 4)}`;
+  }
+  return text;
+}
+
+function makeTreePdfButton(node, merged = false) {
+  const url = merged && node.chain_pdf_url ? node.chain_pdf_url : node.pdf_url;
+  if (!url) return null;
+  const pageCount = merged ? node.chain_page_count : node.assembled_page_count;
+  const label = merged
+    ? `เปิด PDF รวม • ${pageCount || 0} หน้า`
+    : `เปิด PDF เอกสารนี้ • ${pageCount || 0} หน้า`;
+  return makePdfLink(url, label, "secondary-btn chain-tree-view-btn");
+}
+
+function makeTreeNode(node, level, relation = "") {
+  const row = document.createElement("div");
+  row.className = `chain-tree-node chain-tree-node-${level}`;
+
+  const marker = document.createElement("span");
+  marker.className = "chain-tree-marker";
+  marker.setAttribute("aria-hidden", "true");
+
+  const content = document.createElement("div");
+  content.className = "chain-tree-node-content";
+  const heading = document.createElement("div");
+  heading.className = "chain-tree-node-heading";
+  const type = document.createElement("span");
+  type.className = `chain-tree-type chain-tree-type-${level}`;
+  type.textContent = getChainTypeLabel(node);
+  const key = document.createElement("strong");
+  key.textContent = node.key || "-";
+  heading.append(type, key);
+
+  const meta = document.createElement("div");
+  meta.className = "chain-tree-node-meta";
+  meta.textContent = makeChainMeta([
+    relation,
+    node.date ? formatChainDate(node.date) : "",
+    node.name || "",
+    Number.isFinite(node.assembled_page_count) ? `${node.assembled_page_count} หน้า` : "",
+  ]);
+  content.append(heading, meta);
+
+  const action = makeTreePdfButton(node);
+  row.append(marker, content);
+  if (action) row.appendChild(action);
+  return row;
+}
+
+function parseRefList(value) {
+  return String(value || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function appendRefPairs(container, entries) {
+  for (const [label, value] of entries) {
+    if (!value) continue;
+    const row = document.createElement("div");
+    row.className = "refs-structured-row";
+    const key = document.createElement("span");
+    key.className = "refs-structured-key";
+    key.textContent = label;
+    const val = document.createElement("span");
+    val.className = "refs-structured-value";
+    val.textContent = value;
+    row.append(key, val);
+    container.appendChild(row);
+  }
+}
+
+function makeStructuredRefsCell(refs, bankRows = []) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "refs-structured";
+
+  const general = document.createElement("div");
+  general.className = "refs-section";
+  const generalTitle = document.createElement("div");
+  generalTitle.className = "refs-section-title";
+  generalTitle.textContent = "General";
+  general.appendChild(generalTitle);
+
+  const bankScopedKeys = new Set(["bank_code", "bank_account_no", "check_no", "bill_no"]);
+  const generalEntries = [];
+  for (const [key, value] of Object.entries(refs || {})) {
+    if (!value || (bankRows.length && bankScopedKeys.has(key))) continue;
+    generalEntries.push([refLabels[key] || key, value]);
+  }
+  if (generalEntries.length) {
+    appendRefPairs(general, generalEntries);
+  } else {
+    const empty = document.createElement("div");
+    empty.className = "refs-section-empty";
+    empty.textContent = "ไม่มีข้อมูลทั่วไป";
+    general.appendChild(empty);
+  }
+  wrapper.appendChild(general);
+
+  if (Array.isArray(bankRows) && bankRows.length) {
+    const bankSection = document.createElement("div");
+    bankSection.className = "refs-section";
+    const bankTitle = document.createElement("div");
+    bankTitle.className = "refs-section-title";
+    bankTitle.textContent = "Bank Rows";
+    bankSection.appendChild(bankTitle);
+
+    for (const [index, row] of bankRows.entries()) {
+      const card = document.createElement("div");
+      card.className = "bank-row-card";
+      const cardTitle = document.createElement("div");
+      cardTitle.className = "bank-row-title";
+      cardTitle.textContent = `Row ${index + 1}`;
+      card.appendChild(cardTitle);
+      appendRefPairs(card, [
+        ["Bank", row.bank_code],
+        ["Bank Account No.", row.bank_account_no],
+        ["Check No.", row.check_no],
+        ["Bill No.", row.bill_no],
+        ["Currency Amt.", row.currency_amt_raw],
+      ]);
+      bankSection.appendChild(card);
+    }
+    wrapper.appendChild(bankSection);
+  }
+
+  return wrapper;
+}
+
+function makeBankBranchNode(bankCodes, bankAccountNos, checkNos, billNos, kbankPages = [], uobCandidateGroups = []) {
+  const row = document.createElement("div");
+  row.className = "chain-tree-node chain-tree-node-bank";
+
+  const marker = document.createElement("span");
+  marker.className = "chain-tree-marker";
+  marker.setAttribute("aria-hidden", "true");
+
+  const content = document.createElement("div");
+  content.className = "chain-tree-node-content";
+  const heading = document.createElement("div");
+  heading.className = "chain-tree-node-heading";
+  const type = document.createElement("span");
+  type.className = "chain-tree-type chain-tree-type-bank";
+  type.textContent = "Bank";
+  const key = document.createElement("strong");
+  key.textContent = bankCodes.length ? bankCodes.join(", ") : "-";
+  heading.append(type, key);
+
+  const meta = document.createElement("div");
+  meta.className = "chain-tree-node-meta";
+  const metaParts = [
+    "bank_code",
+    bankAccountNos.length ? `Bank Account No.: ${bankAccountNos.join(", ")}` : "",
+    checkNos.length ? `Check No.: ${checkNos.join(", ")}` : "",
+    billNos.length ? `Bill No.: ${billNos.join(", ")}` : "",
+  ];
+  if (kbankPages.length) {
+    const pageLabels = kbankPages
+      .map((page) => {
+        const pageKey = page.page_key || page.key || "";
+        const matchedCheck = page.matched_check_no || "";
+        return matchedCheck ? `${pageKey} (${matchedCheck})` : pageKey;
+      })
+      .filter(Boolean);
+    if (pageLabels.length) metaParts.push(`Matched Page: ${pageLabels.join(", ")}`);
+  }
+  const uobCandidateCount = uobCandidateGroups.reduce((sum, group) => {
+    return sum + (Array.isArray(group?.candidates) ? group.candidates.length : 0);
+  }, 0);
+  if (uobCandidateCount) {
+    metaParts.push(`UOB candidates: ${uobCandidateCount}`);
+  }
+  meta.textContent = makeChainMeta(metaParts);
+  content.append(heading, meta);
+
+  let bankAction = null;
+  if (kbankPages.length === 1) {
+    bankAction = makeTreePdfButton(kbankPages[0]);
+  } else if (kbankPages.length > 1) {
+    const actions = document.createElement("div");
+    actions.className = "chain-tree-actions";
+    for (const page of kbankPages) {
+      const action = makeTreePdfButton(page);
+      if (action) actions.appendChild(action);
+    }
+    if (actions.children.length) bankAction = actions;
+  }
+
+  if (uobCandidateGroups.length) {
+    const uobWrap = document.createElement("div");
+    uobWrap.className = "chain-tree-actions";
+    for (const group of uobCandidateGroups) {
+      const candidates = Array.isArray(group?.candidates) ? group.candidates : [];
+      if (!candidates.length) continue;
+      const details = document.createElement("details");
+      details.className = "chain-uob-candidates";
+      const summary = document.createElement("summary");
+      const amount = group?.rv_bank_row?.amount_raw || group?.rv_bank_row?.amount || "";
+      summary.textContent = `${group.status === "ambiguous_match" ? "เลือก UOB" : "UOB match"}${amount ? ` • ${amount}` : ""} (${candidates.length})`;
+      details.appendChild(summary);
+      for (const candidate of candidates) {
+        const item = document.createElement("div");
+        item.className = "chain-uob-candidate";
+        const label = [
+          candidate.statement_key || "UOB",
+          candidate.transaction_time || "",
+          candidate.amount_raw || candidate.amount || "",
+          candidate.customer_ref || candidate.transaction_ref || "",
+        ].filter(Boolean).join(" • ");
+        const text = document.createElement("div");
+        text.className = "chain-tree-node-meta";
+        text.textContent = label;
+        item.appendChild(text);
+        const actions = document.createElement("div");
+        actions.className = "chain-tree-actions";
+        if (candidate.page_pdf_url) {
+          actions.appendChild(makePdfLink(candidate.page_pdf_url, "เปิดหน้า UOB", "secondary-btn chain-tree-view-btn"));
+        }
+        if (candidate.pdf_url) {
+          actions.appendChild(makePdfLink(candidate.pdf_url, "เปิด Statement", "secondary-btn chain-tree-view-btn"));
+        }
+        item.appendChild(actions);
+        details.appendChild(item);
+      }
+      uobWrap.appendChild(details);
+    }
+    if (uobWrap.children.length) content.appendChild(uobWrap);
+  }
+
+  row.append(marker, content);
+  if (bankAction) row.appendChild(bankAction);
+  return row;
+}
+
+function renderChainTree(chains) {
+  const tree = document.getElementById("chainTree");
+  const accordion = document.getElementById("chainTreeAccordion");
+  tree.innerHTML = "";
+
+  if (!Array.isArray(chains) || chains.length === 0) {
+    setSummaryStatus("chainTreeCount", "ค้นหาเสร็จแล้ว • ไม่พบ chain", "empty");
+    const empty = document.createElement("div");
+    empty.className = "chain-empty";
+    empty.textContent = "ยังไม่พบ chain";
+    tree.appendChild(empty);
+    return;
+  }
+
+  const totalPages = chains.reduce((sum, chain) => sum + Number(chain?.chain_page_count || 0), 0);
+  setSummaryStatus(
+    "chainTreeCount",
+    `${chains.length} ต้น${totalPages > 0 ? ` • ${totalPages} หน้า` : ""}`,
+    "ready"
+  );
+
+  for (const chain of chains) {
+    const group = document.createElement("details");
+    group.className = "chain-tree-group";
+    group.open = false;
+
+    const summary = document.createElement("summary");
+    const summaryMain = document.createElement("span");
+    summaryMain.className = "chain-tree-root-title";
+    const rootType = document.createElement("span");
+    rootType.className = "chain-tree-type chain-tree-type-root";
+    rootType.textContent = "Receive Voucher";
+    const rootKey = document.createElement("strong");
+    rootKey.textContent = chain.voucher_number || chain.key || "-";
+    summaryMain.append(rootType, rootKey);
+
+    const rootMeta = document.createElement("span");
+    rootMeta.className = "chain-tree-root-meta";
+    rootMeta.textContent = `${Number(chain.chain_page_count || 0)} หน้า`;
+    const mergedButton = makeTreePdfButton(chain, true);
+    summary.append(summaryMain, rootMeta);
+    if (mergedButton) summary.appendChild(mergedButton);
+    group.appendChild(summary);
+
+    const branches = document.createElement("div");
+    branches.className = "chain-tree-branches";
+    const bridges = Array.isArray(chain.invoice_bridges) ? chain.invoice_bridges : [];
+    for (const bridge of bridges) {
+      if (!bridge?.resolved || !bridge.invoice) continue;
+      const invoiceBranch = document.createElement("div");
+      invoiceBranch.className = "chain-tree-branch";
+      invoiceBranch.appendChild(makeTreeNode(bridge.invoice, "invoice", `invoice_no: ${bridge.ref_value || "-"}`));
+      const memos = Array.isArray(bridge.invoice.credit_memos) ? bridge.invoice.credit_memos : [];
+      for (const memo of memos) {
+        invoiceBranch.appendChild(makeTreeNode(memo, "memo", `เชื่อมกับ ${bridge.invoice.key || bridge.ref_value || "Invoice"}`));
+      }
+      branches.appendChild(invoiceBranch);
+    }
+
+    const bankCodes = parseRefList(chain.refs && chain.refs.bank_code);
+    const bankAccountNos = parseRefList(chain.refs && chain.refs.bank_account_no);
+    const checkNos = parseRefList(chain.refs && chain.refs.check_no);
+    const billNos = parseRefList(chain.refs && chain.refs.bill_no);
+    const kbankPages = Array.isArray(chain.kbank_page_bridges) ? chain.kbank_page_bridges : [];
+    const uobCandidateGroups = Array.isArray(chain.uob_candidate_bridges) ? chain.uob_candidate_bridges : [];
+
+    if (bankCodes.length || bankAccountNos.length || checkNos.length || billNos.length || kbankPages.length || uobCandidateGroups.length) {
+      const bankBranch = document.createElement("div");
+      bankBranch.className = "chain-tree-branch";
+      bankBranch.appendChild(makeBankBranchNode(bankCodes, bankAccountNos, checkNos, billNos, kbankPages, uobCandidateGroups));
+      branches.appendChild(bankBranch);
+    }
+
+    const unresolved = Array.isArray(chain.unresolved_invoice_refs) ? chain.unresolved_invoice_refs : [];
+    for (const bridge of unresolved) {
+      const warning = document.createElement("div");
+      warning.className = "chain-tree-node chain-tree-node-warning";
+      warning.innerHTML = `<span class="chain-tree-marker" aria-hidden="true"></span><div class="chain-tree-node-content"><div class="chain-tree-node-heading"><span class="chain-tree-type chain-tree-type-warning">ไม่พบ Invoice</span><strong></strong></div><div class="chain-tree-node-meta">ลิงก์จาก Receive Voucher ยังไม่สมบูรณ์</div></div>`;
+      warning.querySelector("strong").textContent = bridge.ref_value || "-";
+      branches.appendChild(warning);
+    }
+
+    if (!branches.children.length) {
+      const empty = document.createElement("div");
+      empty.className = "chain-tree-branch-empty";
+      empty.textContent = "ยังไม่มีเอกสารลูกที่เชื่อมโยง";
+      branches.appendChild(empty);
+    }
+    group.appendChild(branches);
+    tree.appendChild(group);
+  }
+}
+
+function summarizeChainStatus(chain) {
+  const summary = chain?.mapping_summary;
+  if (summary && typeof summary === "object") {
+    return {
+      invoiceRefs: Number(summary.invoice_refs || 0),
+      resolvedInvoices: Number(summary.resolved_invoices || 0),
+      unresolvedInvoices: Number(summary.unresolved_invoices || 0),
+      bankPages: Number(summary.bank_pages || 0),
+      uobCandidates: Number(summary.uob_candidates || 0),
+      invoiceComplete: Boolean(summary.invoice_complete),
+      bankComplete: Boolean(summary.bank_complete),
+      overallComplete: Boolean(summary.overall_complete),
+    };
+  }
+
+  const invoiceBridges = Array.isArray(chain.invoice_bridges) ? chain.invoice_bridges : [];
+  const unresolvedInvoices = Array.isArray(chain.unresolved_invoice_refs) ? chain.unresolved_invoice_refs : [];
+  const kbankPages = Array.isArray(chain.kbank_page_bridges) ? chain.kbank_page_bridges : [];
+  const uobCandidateGroups = Array.isArray(chain.uob_candidate_bridges) ? chain.uob_candidate_bridges : [];
+  const uobCandidates = uobCandidateGroups.reduce((sum, group) => {
+    return sum + (Array.isArray(group?.candidates) ? group.candidates.length : 0);
+  }, 0);
+  const resolvedInvoices = invoiceBridges.filter((bridge) => bridge && bridge.resolved && bridge.invoice).length;
+  const totalInvoiceRefs = invoiceBridges.length + unresolvedInvoices.length;
+  const invoiceComplete = totalInvoiceRefs > 0 && unresolvedInvoices.length === 0;
+  const bankComplete = kbankPages.length > 0;
+  const overallComplete = invoiceComplete && bankComplete;
+  return {
+    invoiceRefs: totalInvoiceRefs,
+    resolvedInvoices,
+    unresolvedInvoices: unresolvedInvoices.length,
+    bankPages: kbankPages.length,
+    uobCandidates,
+    invoiceComplete,
+    bankComplete,
+    overallComplete,
+  };
+}
+
+function applyMappingStatusFilter(chains) {
+  const mapStatus = document.getElementById("mapStatus").value;
+  if (!Array.isArray(chains) || !mapStatus) return Array.isArray(chains) ? chains : [];
+  return chains.filter((chain) => {
+    const status = chain?.mapping_status || (summarizeChainStatus(chain).overallComplete ? "complete" : "incomplete");
+    if (mapStatus === "complete") return status === "complete";
+    if (mapStatus === "incomplete") return status === "incomplete";
+    return true;
+  });
+}
+
+function makeStatusPill(label, tone) {
+  const pill = document.createElement("span");
+  pill.className = `mapping-pill mapping-pill-${tone}`;
+  pill.textContent = label;
+  return pill;
+}
+
+function renderChainMap(chains) {
+  const panel = document.getElementById("chainMap");
+  panel.innerHTML = "";
+
+  if (!Array.isArray(chains) || chains.length === 0) {
+    setSummaryStatus("chainMapCount", "ค้นหาเสร็จแล้ว • ไม่พบ chain", "empty");
+    const empty = document.createElement("div");
+    empty.className = "chain-empty";
+    empty.textContent = "ยังไม่ได้ค้นหา";
+    panel.appendChild(empty);
+    return;
+  }
+
+  const completed = chains.filter((chain) => summarizeChainStatus(chain).overallComplete).length;
+  setSummaryStatus("chainMapCount", `ครบถึงธนาคาร ${completed}/${chains.length}`, completed ? "ready" : "empty");
+
+  for (const chain of chains) {
+    const status = summarizeChainStatus(chain);
+    const card = document.createElement("div");
+    card.className = "mapping-card";
+
+    const header = document.createElement("div");
+    header.className = "mapping-card-header";
+
+    const title = document.createElement("div");
+    title.className = "mapping-card-title";
+    const rvType = document.createElement("span");
+    rvType.className = "chain-tree-type chain-tree-type-root";
+    rvType.textContent = "RV";
+    const rvKey = document.createElement("strong");
+    rvKey.textContent = chain.voucher_number || chain.key || "-";
+    title.append(rvType, rvKey);
+
+    const overall = makeStatusPill(
+      status.overallComplete ? "ครบถึงธนาคาร" : "ยังไม่ครบ",
+      status.overallComplete ? "ready" : "warning"
+    );
+
+    header.append(title, overall);
+
+    const facts = document.createElement("div");
+    facts.className = "mapping-facts";
+    facts.append(
+      makeStatusPill(
+        status.invoiceComplete
+          ? `Invoice ${status.resolvedInvoices}/${status.invoiceRefs}`
+          : `Invoice ${status.resolvedInvoices}/${status.invoiceRefs} • ขาด ${status.unresolvedInvoices}`,
+        status.invoiceComplete ? "ready" : "warning"
+      ),
+      makeStatusPill(
+        status.bankComplete
+          ? `Bank ${status.bankPages} page${status.uobCandidates ? ` • UOB ${status.uobCandidates}` : ""}`
+          : status.uobCandidates
+            ? `Bank ยังไม่ยืนยัน • UOB ${status.uobCandidates}`
+            : "Bank ยังไม่เจอ",
+        status.bankComplete ? "ready" : "warning"
+      )
+    );
+
+    const meta = document.createElement("div");
+    meta.className = "mapping-meta";
+    meta.textContent = makeChainMeta([
+      chain.refs?.check_no ? `Check No.: ${chain.refs.check_no}` : "",
+      chain.refs?.invoice_no ? `Invoice No.: ${chain.refs.invoice_no}` : "",
+      status.bankPages ? `Matched bank pages: ${status.bankPages}` : "",
+      status.uobCandidates ? `UOB candidates: ${status.uobCandidates}` : "",
+    ]);
+
+    const actions = document.createElement("div");
+    actions.className = "mapping-actions";
+    if (chain.chain_pdf_url) {
+      actions.appendChild(
+        makePdfLink(
+          chain.chain_pdf_url,
+          `เปิด PDF รวม • ${Number(chain.chain_page_count || 0)} หน้า`,
+          "secondary-btn chain-view-btn"
+        )
+      );
+    }
+
+    card.append(header, facts, meta, actions);
+    panel.appendChild(card);
+  }
+}
+
+function renderChainJson(chains) {
+  const output = document.getElementById("chainJson");
+  if (!Array.isArray(chains) || chains.length === 0) {
+    setSummaryStatus("chainJsonCount", "ค้นหาเสร็จแล้ว • ไม่พบ chain", "empty");
+    output.innerHTML = "";
+    const empty = document.createElement("div");
+    empty.className = "json-empty";
+    empty.textContent = "[]";
+    output.appendChild(empty);
+    return;
+  }
+
+  const grouped = groupChainsForJson(chains);
+  setSummaryStatus("chainJsonCount", `${chains.length} ชุดข้อมูล`, "ready");
+  output.innerHTML = "";
+  output.appendChild(renderJsonNode(grouped, null, 0));
+}
+
+function groupChainsForJson(chains) {
+  const items = Array.isArray(chains) ? chains : [];
+  const complete = [];
+  const incomplete = [];
+  for (const chain of items) {
+    const status = chain?.mapping_status === "complete" ? "complete" : "incomplete";
+    if (status === "complete") complete.push(chain);
+    else incomplete.push(chain);
+  }
+
+  const total = items.length;
+  const completeCount = complete.length;
+  const incompleteCount = incomplete.length;
+  const grouped = {
+    summary: {
+      total,
+      complete: completeCount,
+      incomplete: incompleteCount,
+      completion_rate: total ? Number(((completeCount / total) * 100).toFixed(2)) : 0,
+    },
+    complete,
+    incomplete,
+  }
+  return grouped;
+}
+
+function renderJsonNode(value, key = null, depth = 0) {
+  const isArray = Array.isArray(value);
+  const isObject = value !== null && typeof value === "object" && !isArray;
+  const isExpandable = isArray || isObject;
+
+  if (!isExpandable) {
+    const row = document.createElement("div");
+    row.className = "json-row";
+
+    if (key !== null) {
+      const keyEl = document.createElement("span");
+      keyEl.className = "json-key";
+      keyEl.textContent = `${key}: `;
+      row.appendChild(keyEl);
+    }
+
+    const valueEl = document.createElement("span");
+    const valueType = value === null ? "null" : typeof value;
+    valueEl.className = `json-value json-value-${valueType}`;
+    valueEl.textContent = typeof value === "string" ? `"${value}"` : String(value);
+    row.appendChild(valueEl);
+    return row;
+  }
+
+  const entries = isArray
+    ? value.map((item, index) => [index, item])
+    : Object.entries(value);
+
+  const details = document.createElement("details");
+  details.className = "json-node";
+  details.open = depth < 2;
+
+  const summary = document.createElement("summary");
+  summary.className = "json-summary";
+
+  if (key !== null) {
+    const keyEl = document.createElement("span");
+    keyEl.className = "json-key";
+    keyEl.textContent = `${key}: `;
+    summary.appendChild(keyEl);
+  }
+
+  const typeEl = document.createElement("span");
+  typeEl.className = "json-bracket";
+  typeEl.textContent = isArray ? "[" : "{";
+
+  const countEl = document.createElement("span");
+  countEl.className = "json-count";
+  countEl.textContent = `${entries.length} ${isArray ? "items" : "fields"}`;
+
+  const closeEl = document.createElement("span");
+  closeEl.className = "json-bracket";
+  closeEl.textContent = isArray ? "]" : "}";
+
+  summary.append(typeEl, countEl, closeEl);
+  details.appendChild(summary);
+
+  const body = document.createElement("div");
+  body.className = "json-children";
+  for (const [childKey, childValue] of entries) {
+    body.appendChild(renderJsonNode(childValue, childKey, depth + 1));
+  }
+  details.appendChild(body);
+  return details;
+}
+
+async function copyChainJson() {
+  const payload = Array.isArray(latestChainPayload) ? latestChainPayload : [];
+  const text = JSON.stringify(groupChainsForJson(payload), null, 2);
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      textArea.setAttribute("readonly", "");
+      textArea.style.position = "fixed";
+      textArea.style.opacity = "0";
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textArea);
+    }
+    setSummaryStatus("chainJsonCount", payload.length ? `คัดลอก JSON แล้ว • ${payload.length} ชุดข้อมูล` : "คัดลอก JSON แล้ว • 0 ชุดข้อมูล", payload.length ? "ready" : "empty");
+    pulseSummaryStatus("chainJsonCount");
+  } catch {
+    setSummaryStatus("chainJsonCount", "คัดลอก JSON ไม่สำเร็จ", "warning");
+    pulseSummaryStatus("chainJsonCount");
+  }
+}
+
+function makeChainMeta(parts) {
+  return parts.filter(Boolean).join(" • ");
+}
+
+function getChainTypeLabel(node) {
+  if (node.doc_type === "receive-vouchers") return "Receive Voucher";
+  if (node.doc_type === "invoices") return "Invoice";
+  return "Credit Memo";
+}
+
+function makeChainTableRow({
+  node,
+  level,
+  bridgeText = "",
+  statusText = "",
+  statusClass = "",
+  useMergedPdf = false,
+}) {
+  const tr = document.createElement("tr");
+  tr.className = `chain-table-row chain-table-row-${level}`;
+  if (statusClass) tr.classList.add(statusClass);
+
+  const typeCell = document.createElement("td");
+  const badge = document.createElement("span");
+  badge.className = `chain-type-badge chain-type-${level}`;
+  badge.textContent = getChainTypeLabel(node);
+  typeCell.appendChild(badge);
+
+  const keyCell = document.createElement("td");
+  keyCell.className = "chain-key-cell";
+  const key = document.createElement("div");
+  key.className = "chain-key";
+  key.textContent = node.key || "";
+  keyCell.appendChild(key);
+  if (bridgeText) {
+    const bridge = document.createElement("div");
+    bridge.className = "chain-bridge-note";
+    bridge.textContent = bridgeText;
+    keyCell.appendChild(bridge);
+  }
+
+  const nameCell = document.createElement("td");
+  nameCell.textContent = makeChainMeta([
+    node.name || "",
+    node.customer_code ? `Customer: ${node.customer_code}` : "",
+  ]);
+
+  tr.append(
+    typeCell,
+    keyCell,
+    makeCell(node.date ? formatChainDate(node.date) : ""),
+    nameCell,
+    makeCell(Number.isFinite(node.assembled_page_count) ? node.assembled_page_count : ""),
+    makeCell(statusText)
+  );
+
+  const actionCell = document.createElement("td");
+  const pdfUrl = useMergedPdf && node.chain_pdf_url ? node.chain_pdf_url : node.pdf_url;
+  if (pdfUrl) {
+    const pageCount = useMergedPdf ? node.chain_page_count : node.assembled_page_count;
+    const label = useMergedPdf
+      ? `เปิด PDF รวม • ${pageCount || 0} หน้า`
+      : `เปิด PDF เอกสารนี้ • ${pageCount || 0} หน้า`;
+    actionCell.appendChild(makePdfLink(pdfUrl, label, "secondary-btn chain-view-btn"));
+  }
+  tr.appendChild(actionCell);
+  return tr;
+}
+
+function makeUnresolvedChainRow(bridge) {
+  const tr = document.createElement("tr");
+  tr.className = "chain-table-row chain-table-row-child chain-row-warning";
+  tr.append(
+    makeCell("Invoice"),
+    makeCell(bridge.ref_value || ""),
+    makeCell(""),
+    makeCell(""),
+    makeCell(""),
+    makeCell(`Unresolved from ${bridge.source_key || "Receive Voucher"}`),
+    makeCell("")
+  );
+  return tr;
+}
+
+function renderChain(chains) {
+  const list = document.getElementById("chainList");
+  list.innerHTML = "";
+
+  if (!Array.isArray(chains) || chains.length === 0) {
+    setSummaryStatus("chainCount", "ค้นหาเสร็จแล้ว • ไม่พบ chain", "empty");
+    const empty = document.createElement("div");
+    empty.className = "chain-empty";
+    empty.textContent = "ยังไม่พบ chain";
+    list.appendChild(empty);
+    return;
+  }
+
+  const totalPages = chains.reduce((sum, chain) => sum + Number(chain?.chain_page_count || 0), 0);
+  setSummaryStatus(
+    "chainCount",
+    totalPages > 0
+      ? `ค้นหาเสร็จแล้ว • ${chains.length} ชุดเอกสาร • ${totalPages} หน้า`
+      : `ค้นหาเสร็จแล้ว • ${chains.length} ชุดเอกสาร`,
+    "ready"
+  );
+
+  const scroll = document.createElement("div");
+  scroll.className = "table-scroll chain-table-scroll";
+  const table = document.createElement("table");
+  table.className = "chain-table";
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>ประเภท</th>
+        <th>เลขที่เอกสาร / Link</th>
+        <th>วันที่</th>
+        <th>ชื่อ / ลูกค้า</th>
+        <th>หน้า</th>
+        <th>สถานะ</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  `;
+  const tbody = table.querySelector("tbody");
+
+  for (const chain of chains) {
+    tbody.appendChild(makeChainTableRow({
+      node: chain,
+      level: "root",
+      statusText: "Root",
+      useMergedPdf: true,
+    }));
+
+    const bridges = Array.isArray(chain.invoice_bridges) ? chain.invoice_bridges : [];
+    if (bridges.length === 0) {
+      const tr = document.createElement("tr");
+      tr.className = "chain-table-row chain-table-row-child chain-row-muted";
+      const td = makeCell("ยังไม่พบ Invoice ที่เชื่อมต่อ");
+      td.colSpan = 7;
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
+
+    for (const bridge of bridges) {
+      if (!bridge.resolved || !bridge.invoice) {
+        tbody.appendChild(makeUnresolvedChainRow(bridge));
+        continue;
+      }
+
+      const invoice = bridge.invoice;
+      tbody.appendChild(makeChainTableRow({
+        node: invoice,
+        level: "child",
+        bridgeText: `RV invoice_no → ${bridge.ref_value}`,
+        statusText: "Linked",
+      }));
+
+      const memos = Array.isArray(invoice.credit_memos) ? invoice.credit_memos : [];
+      if (memos.length === 0) {
+        const tr = document.createElement("tr");
+        tr.className = "chain-table-row chain-table-row-grandchild chain-row-muted";
+        const td = makeCell(`ยังไม่พบ Credit Memo ที่เชื่อมต่อกับ ${invoice.key || bridge.ref_value}`);
+        td.colSpan = 7;
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      }
+
+      for (const memo of memos) {
+        tbody.appendChild(makeChainTableRow({
+          node: memo,
+          level: "grandchild",
+          bridgeText: `Credit Memo invoice_no → ${invoice.key || bridge.ref_value}`,
+          statusText: "Linked",
+        }));
+      }
+    }
+  }
+
+  scroll.appendChild(table);
+  list.appendChild(scroll);
+}
+
+function getLandingQueryKey() {
+  return buildQuery().toString();
+}
+
+async function runSearch() {
+  if (!pageActive) return;
+  showLoading("กำลังค้นหา… / Searching…");
+  try {
+    const query = buildQuery().toString();
+    const chainRes = await fetch(`${chainApiBase}?${query}`);
+    const chainPayload = await parseResponse(chainRes);
+    if (!chainRes.ok) {
+      const detail = chainPayload.detail || "ค้นหาไม่สำเร็จ";
+      setSummaryStatus("chainTreeCount", detail, "empty");
+      setSummaryStatus("chainJsonCount", detail, "empty");
+      renderChainTree([]);
+      renderChainJson([]);
+      return;
+    }
+    const rawChains = Array.isArray(chainPayload) ? chainPayload : [];
+    const chains = applyMappingStatusFilter(rawChains);
+    latestChainPayload = chains;
+    renderChainMap(chains);
+    renderChainTree(chains);
+    renderChainJson(chains);
+    pulseSummaryStatus("chainMapCount");
+    pulseSummaryStatus("chainTreeCount");
+    pulseSummaryStatus("chainJsonCount");
+    saveLandingState({
+      searchSubmitted: true,
+      cachedChainQueryKey: getLandingQueryKey(),
+      cachedChain: chains,
+      cachedRawChain: rawChains,
+      cachedChainAt: Date.now(),
+    });
+  } finally {
+    hideLoading();
+  }
+}
+
+document.getElementById("searchForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await runSearch();
+});
+
+document.getElementById("exportBtn").addEventListener("click", () => {
+  window.open(`/api/receive-vouchers/export/by-filter/pdf?${buildQuery()}`, "_blank");
+});
+
+for (const id of landingStateFields) {
+  const input = document.getElementById(id);
+  input.addEventListener("input", () => saveLandingState());
+  input.addEventListener("change", () => saveLandingState());
+}
+
+document.getElementById("advancedPanel").addEventListener("toggle", () => saveLandingState());
+document.getElementById("chainMapAccordion").addEventListener("toggle", () => saveLandingState());
+document.getElementById("chainTreeAccordion").addEventListener("toggle", () => saveLandingState());
+document.getElementById("chainJsonAccordion").addEventListener("toggle", () => saveLandingState());
+document.getElementById("copyJsonBtn").addEventListener("click", () => void copyChainJson());
+document.getElementById("universalUploadAccordion").addEventListener("toggle", () => saveLandingState());
+document.getElementById("uploadHistoryAccordion").addEventListener("toggle", () => saveLandingState());
+document.getElementById("quickAccessAccordion").addEventListener("toggle", () => saveLandingState());
+window.addEventListener("pagehide", () => saveLandingState());
+
+function renderHistory(items) {
+  const historyList = document.getElementById("uploadHistoryList");
+  historyList.innerHTML = "";
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "history-empty";
+    empty.textContent = "ยังไม่มีประวัติ / No history yet";
+    historyList.appendChild(empty);
+    return;
+  }
+  for (const item of items) {
+    const row = document.createElement("article");
+    row.className = `history-row history-${item.status || "unknown"}`;
+
+    const head = document.createElement("div");
+    head.className = "history-head";
+
+    const title = document.createElement("div");
+    title.className = "history-title";
+    title.textContent = item.filename || item.label || "Unknown file";
+
+    const originBadge = PdfRvState.createOriginBadge(item);
+
+    const badge = document.createElement("span");
+    badge.className = "history-badge";
+    badge.textContent = item.label || "Document";
+    if (originBadge) badge.classList.add("is-foreign");
+
+    head.append(title, badge);
+    if (originBadge) head.appendChild(originBadge);
+
+    const meta = document.createElement("div");
+    meta.className = "history-meta";
+    meta.textContent = `${item.status || "unknown"} • ${item.updated_at || item.created_at || ""}`;
+
+    row.append(head, meta);
+    historyList.appendChild(row);
+  }
+}
+
+// Universal upload logic
+const TYPE_RULES = [
+  {
+    key: "invoice",
+    label: "Invoice",
+    page: "/invoices",
+    uploadApi: "/api/invoices/upload",
+    jobApi: "/api/invoices/upload",
+    historyApi: "/api/invoices/upload/history",
+    pattern: /^Invoices\s+(0?[1-9]|1[0-2])-\d{2}\.pdf$/i
+  },
+  {
+    key: "receive_voucher",
+    label: "Receive Voucher",
+    page: "/receive-vouchers",
+    uploadApi: "/api/receive-vouchers/upload",
+    jobApi: "/api/receive-vouchers/upload",
+    historyApi: "/api/receive-vouchers/upload/history",
+    pattern: /^RECEIVE\s+VOUCHER\s+(0?[1-9]|1[0-2])-\d{2}\.pdf$/i
+  },
+  {
+    key: "credit_memo",
+    label: "Credit Memo",
+    page: "/credit-memos",
+    uploadApi: "/api/credit-memos/upload",
+    jobApi: "/api/credit-memos/upload",
+    historyApi: "/api/credit-memos/upload/history",
+    pattern: /^Credit\s+Memo\s+(0?[1-9]|1[0-2])-\d{2}\.pdf$/i
+  },
+  {
+    key: "kbank",
+    label: "KBank Statement",
+    page: "/kbank-statements",
+    uploadApi: "/api/kbank-statements/upload",
+    jobApi: "/api/kbank-statements/upload",
+    historyApi: "/api/kbank-statements/upload/history",
+    pattern: /^(0?[1-9]|1[0-2])-\d{2}\s+กสิกรไทย\.pdf$/i
+  },
+  {
+    key: "uob_ca",
+    label: "UOB-CA",
+    page: "/uob-ca-statements",
+    uploadApi: "/api/uob-ca-statements/upload",
+    jobApi: "/api/uob-ca-statements/upload",
+    historyApi: "/api/uob-ca-statements/upload/history",
+    pattern: /^ด\.(0?[1-9]|1[0-2])-\d{2}\s+UOB-CA\.pdf$/i
+  }
+];
+
+const fileInput = document.getElementById("universalFileInput");
+const dropzone = document.getElementById("universalDropzone");
+const panel = document.getElementById("selectedFilesPanel");
+const list = document.getElementById("selectedFilesList");
+const count = document.getElementById("selectedFileCount");
+const readyCountBadge = document.getElementById("selectedReadyCount");
+const runningCountBadge = document.getElementById("selectedRunningCount");
+const doneCountBadge = document.getElementById("selectedDoneCount");
+const failedCountBadge = document.getElementById("selectedFailedCount");
+const clearBtn = document.getElementById("clearFilesBtn");
+const uploadBtn = document.getElementById("uploadAllBtn");
+const refreshHistoryBtn = document.getElementById("refreshHistoryBtn");
+const uploadStateKey = PdfRvState.key("landing", "universal-upload-state");
+
+if (navigationType !== "back_forward") {
+  for (const key of [landingStateKey, uploadStateKey, `${landingStateKey}:results`, `${landingStateKey}:history`]) {
+    sessionStorage.removeItem(key);
+  }
+}
+
+let selected = [];
+let uploading = false;
+let historyLoading = false;
+
+function readUploadState() {
+  try {
+    return JSON.parse(sessionStorage.getItem(uploadStateKey) || "[]") || [];
+  } catch {
+    return [];
+  }
+}
+
+function saveUploadState() {
+  const state = selected
+    .filter((item) => item.jobId || item.state !== "ready")
+    .map((item) => ({
+      signature: item.signature || "",
+      name: item.file?.name || item.name || item.filename || "Unknown file",
+      size: item.file?.size ?? item.size ?? null,
+      lastModified: item.file?.lastModified ?? item.lastModified ?? null,
+      ruleKey: item.rule?.key || item.ruleKey || null,
+      state: item.state,
+      message: item.message || "",
+      jobId: item.jobId || null,
+      cancelRequested: Boolean(item.cancelRequested),
+    }));
+  sessionStorage.setItem(uploadStateKey, JSON.stringify(state));
+}
+
+function restoreUploadState() {
+  if (navigationType !== "back_forward") {
+    sessionStorage.removeItem(uploadStateKey);
+    selected = [];
+    return;
+  }
+  const state = readUploadState();
+  selected = state.map((item, index) => ({
+    id: item.jobId || item.signature || `${item.name}-${index}`,
+    signature: item.signature || `${item.name}|${item.size ?? ""}|${item.lastModified ?? ""}`,
+    file: null,
+    name: item.name || "Unknown file",
+    size: item.size ?? null,
+    lastModified: item.lastModified ?? null,
+    ruleKey: item.ruleKey || null,
+    rule: TYPE_RULES.find((rule) => rule.key === item.ruleKey) || null,
+    state: item.state || "pending",
+    message: item.message || "",
+    jobId: item.jobId || null,
+    cancelRequested: Boolean(item.cancelRequested),
+  }));
+}
+
+function classifyFilename(filename) {
+  return TYPE_RULES.find((rule) => rule.pattern.test(filename)) || null;
+}
+
+function getItemRule(item) {
+  return item.rule || TYPE_RULES.find((rule) => rule.key === item.ruleKey) || null;
+}
+
+function getItemName(item) {
+  return item.file?.name || item.name || item.filename || "Unknown file";
+}
+
+function makeId(file, index) {
+  return `${file.name}-${file.size}-${file.lastModified}-${index}`;
+}
+
+function statusText(item) {
+  const label = PdfRvState.getJobLabel(item, getItemName(item));
+  if (!item.rule) return "ไม่รู้จักประเภท / Unknown";
+  if (item.state === "ready") return PdfRvState.getStatusPrefix("ready");
+  if (item.state === "uploading") return PdfRvState.formatLabeledStatus("preparing", label, " — Uploading");
+  if (item.state === "pending") return item.message || PdfRvState.formatLabeledStatus("preparing", label);
+  if (item.state === "processing") return item.message || PdfRvState.formatLabeledStatus("processing", label);
+  if (item.state === "cancelled") return item.message || PdfRvState.getStatusPrefix("cancelled");
+  if (item.state === "done") return item.message || PdfRvState.getStatusPrefix("done");
+  if (item.state === "failed") return item.message || PdfRvState.getStatusPrefix("failed");
+  return item.message || item.state;
+}
+
+function queueSortStamp(item) {
+  return String(item?.created_at || item?.updated_at || item?.available_at || "").trim();
+}
+
+function compareQueueItems(a, b) {
+  const order = { uploading: 0, pending: 1, processing: 1, ready: 2, done: 3, failed: 4, cancelled: 4 };
+  const stateA = order[a?.state] ?? 9;
+  const stateB = order[b?.state] ?? 9;
+  if (stateA !== stateB) return stateA - stateB;
+
+  const stampA = queueSortStamp(a);
+  const stampB = queueSortStamp(b);
+  if (stampA !== stampB) return stampA.localeCompare(stampB);
+
+  const nameA = getItemName(a);
+  const nameB = getItemName(b);
+  if (nameA !== nameB) return nameA.localeCompare(nameB);
+
+  return String(a?.jobId || a?.id || "").localeCompare(String(b?.jobId || b?.id || ""));
+}
+
+function addFiles(files) {
+  if (uploading) return;
+  const incoming = Array.from(files).filter((file) => file.name.toLowerCase().endsWith(".pdf"));
+  const known = new Set(selected.map((item) => item.signature || `${getItemName(item)}|${item.size ?? ""}|${item.lastModified ?? ""}`));
+  for (const file of incoming) {
+    const signature = `${file.name}|${file.size}|${file.lastModified}`;
+    if (known.has(signature)) continue;
+    known.add(signature);
+    selected.push({
+      id: makeId(file, selected.length),
+      signature,
+      file,
+      name: file.name,
+      size: file.size,
+      lastModified: file.lastModified,
+      ruleKey: classifyFilename(file.name)?.key || null,
+      rule: classifyFilename(file.name),
+      state: "ready",
+      message: "",
+      jobId: null
+    });
+  }
+  renderUploadPanel();
+}
+
+function renderUploadPanel() {
+  panel.hidden = selected.length === 0;
+  count.textContent = `${selected.length} ไฟล์ / files`;
+  list.innerHTML = "";
+
+  const readyItems = selected.filter((item) => item.state === "ready");
+  const runningItems = selected.filter((item) => ["uploading", "pending", "processing"].includes(item.state));
+  const pendingItems = selected.filter((item) => item.state === "pending");
+  const doneItems = selected.filter((item) => item.state === "done");
+  const failedItems = selected.filter((item) => ["failed", "cancelled"].includes(item.state));
+  const orderedItems = [...selected].sort(compareQueueItems);
+
+  readyCountBadge.textContent = String(readyItems.length);
+  runningCountBadge.textContent = String(runningItems.length);
+  doneCountBadge.textContent = String(doneItems.length);
+  failedCountBadge.textContent = String(failedItems.length);
+
+  const queueNoteId = "uploadQueueNote";
+  const existingQueueNote = document.getElementById(queueNoteId);
+  if (pendingItems.length > 0) {
+    if (!existingQueueNote) {
+      const queueNote = document.createElement("div");
+      queueNote.id = queueNoteId;
+      queueNote.className = "selected-queue-note";
+      queueNote.textContent = `${PdfRvState.getStatusPrefix("preparing")} ${pendingItems.length} รายการ`;
+      panel.insertBefore(queueNote, list);
+    } else {
+      existingQueueNote.textContent = `${PdfRvState.getStatusPrefix("preparing")} ${pendingItems.length} รายการ`;
+    }
+  } else if (existingQueueNote) {
+    existingQueueNote.remove();
+  }
+
+  const ownItems = selected.filter((item) => !PdfRvState.isForeignJob(item));
+  const readyCount = ownItems.filter((item) => getItemRule(item) && item.state === "ready" && item.file).length;
+  const active = ownItems.some((item) => ["uploading", "pending", "processing"].includes(item.state));
+  uploadBtn.disabled = uploading || readyCount === 0;
+  clearBtn.disabled = uploading || active;
+  uploadBtn.textContent = uploading
+    ? "กำลังอัปโหลด… / Uploading…"
+    : `อัปโหลดทั้งหมด / Upload all (${readyCount})`;
+
+  if (!orderedItems.length) {
+    const empty = document.createElement("div");
+    empty.className = "selected-empty";
+    empty.textContent = "ยังไม่มีรายการ";
+    list.appendChild(empty);
+    saveUploadState();
+    return;
+  }
+
+  for (const item of orderedItems) {
+    const row = document.createElement("div");
+    const rule = getItemRule(item);
+    row.className = `selected-file-row state-${item.state}${rule ? "" : " state-unknown"}`;
+
+    const name = document.createElement("div");
+    name.className = "selected-file-name";
+    name.textContent = getItemName(item);
+
+    const type = document.createElement(rule ? "a" : "span");
+    type.className = "selected-file-type";
+    type.textContent = rule ? rule.label : "Unknown";
+    if (rule) type.href = rule.page;
+
+    const status = document.createElement("div");
+    status.className = "selected-file-status";
+    const originBadge = PdfRvState.createOriginBadge(item);
+    if (item.state === "pending") {
+      const badge = document.createElement("span");
+      badge.className = "selected-status-badge is-queued";
+      badge.textContent = PdfRvState.getStatusPrefix("preparing");
+      status.appendChild(badge);
+
+      const text = document.createElement("span");
+      text.className = "selected-status-detail";
+      text.textContent = item.message || PdfRvState.getStatusPrefix("preparing");
+      status.appendChild(text);
+    } else {
+      status.textContent = statusText(item);
+    }
+    if (originBadge) status.appendChild(originBadge);
+
+    const actions = document.createElement("div");
+    actions.className = "selected-file-actions";
+
+    const canCancel = !PdfRvState.getJobClientId(item) || PdfRvState.getJobClientId(item) === clientId;
+    if (["pending", "processing"].includes(item.state) && item.jobId && canCancel) {
+      const cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.className = "secondary-btn cancel-btn";
+      cancelBtn.textContent = "ยกเลิก / Cancel";
+      cancelBtn.disabled = Boolean(item.cancelRequested);
+      cancelBtn.addEventListener("click", () => cancelUpload(item));
+      actions.appendChild(cancelBtn);
+    }
+
+    row.append(name, type, status, actions);
+    list.appendChild(row);
+  }
+
+  saveUploadState();
+}
+
+function historyApiForRule(rule) {
+  return rule.historyApi || rule.jobApi.replace(/\/upload$/, "/upload/history");
+}
+
+function finishedMessage(job) {
+  if (job.status === "done") {
+    const pages = job.total_pages == null ? "" : `${job.total_pages} หน้า / pages`;
+    return pages ? `${PdfRvState.getStatusPrefix("done")} — ${pages}` : PdfRvState.getStatusPrefix("done");
+  }
+  return job.error_message
+    ? `${PdfRvState.getStatusPrefix("failed")} — ${job.error_message}`
+    : PdfRvState.getStatusPrefix("failed");
+}
+
+function progressMessage(job) {
+  const label = PdfRvState.getJobLabel(job);
+  const processedPages = Number.isFinite(job.processed_pages) ? job.processed_pages : null;
+  const totalPages = Number.isFinite(job.total_pages) ? job.total_pages : null;
+
+  if (job.status === "pending") {
+    return PdfRvState.formatLabeledStatus("preparing", label);
+  }
+  if (job.status === "processing") {
+    if (processedPages != null && totalPages != null) return PdfRvState.formatLabeledStatus("processing", label, ` — ${processedPages}/${totalPages} หน้า`);
+    if (processedPages != null) return PdfRvState.formatLabeledStatus("processing", label, ` — ${processedPages} หน้า`);
+    return PdfRvState.formatLabeledStatus("processing", label);
+  }
+  return finishedMessage(job);
+}
+
+async function cancelUpload(item) {
+  const rule = getItemRule(item);
+  if (!rule || !item.jobId || item.cancelRequested) return;
+  item.cancelRequested = true;
+  renderUploadPanel();
+
+  try {
+    const response = await clientFetch(`${rule.jobApi}/${encodeURIComponent(item.jobId)}/cancel`, {
+      method: "POST",
+    });
+    const payload = await parseResponse(response);
+    if (!response.ok) {
+      item.cancelRequested = false;
+      if (response.status === 404 || response.status === 409) {
+        await refreshUploadJobState(item);
+      } else {
+        item.message = payload.detail || `${PdfRvState.getStatusPrefix("failed")} — Cancel failed`;
+      }
+      renderUploadPanel();
+      return;
+    }
+    item.state = "cancelled";
+    item.message = PdfRvState.getStatusPrefix("cancelled");
+  } catch {
+    if (!pageActive) return;
+    item.cancelRequested = false;
+    item.message = "เชื่อมต่อไม่ได้ / Connection failed";
+  }
+
+  renderUploadPanel();
+}
+
+async function refreshUploadJobState(item) {
+  const rule = getItemRule(item);
+  if (!rule || !item.jobId) return false;
+
+  try {
+    const response = await clientFetch(`${rule.jobApi}/${encodeURIComponent(item.jobId)}`);
+    const payload = await parseResponse(response);
+    if (!response.ok) {
+      item.state = "failed";
+      item.message = payload.detail || `${PdfRvState.getStatusPrefix("failed")} — Upload job not found`;
+      item.cancelRequested = false;
+      return false;
+    }
+
+    const job = payload.job || payload;
+    item.state = job.status === "done" ? "done" : job.status === "failed" ? "failed" : job.status;
+    if (job.client_id) item.client_id = job.client_id;
+    item.message = progressMessage(job);
+    item.cancelRequested = Boolean(job.cancel_requested);
+    return true;
+  } catch {
+    if (!pageActive) return false;
+    return false;
+  }
+}
+
+async function loadHistory() {
+  if (!pageActive || historyLoading) return;
+  historyLoading = true;
+  refreshHistoryBtn.disabled = true;
+  document.getElementById("uploadHistoryList").innerHTML = '<div class="history-empty">กำลังโหลดประวัติ… / Loading history…</div>';
+
+  try {
+    if (!pageActive) return;
+    const results = await Promise.allSettled(
+      TYPE_RULES.map(async (rule) => {
+        const response = await clientFetch(historyApiForRule(rule));
+        if (!response.ok) return [];
+        const rows = await response.json();
+        return rows.map((row) => ({
+          ...row,
+          label: rule.label,
+          source: rule.key,
+        }));
+      })
+    );
+
+    if (!pageActive) return;
+    const items = [];
+    for (const result of results) {
+      if (result.status === "fulfilled" && Array.isArray(result.value)) items.push(...result.value);
+    }
+
+    items.sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")));
+    renderHistory(items.slice(0, 12));
+    mergeHistoryIntoSelected(items);
+    saveLandingState({
+      cachedHistory: items.slice(0, 12),
+      cachedHistoryAt: Date.now(),
+    });
+  } finally {
+    historyLoading = false;
+    refreshHistoryBtn.disabled = false;
+  }
+}
+
+function mergeHistoryIntoSelected(items) {
+  const byJobId = new Map();
+  const byName = new Map();
+  for (const item of items) {
+    if (item.id) byJobId.set(item.id, item);
+    const nameKey = `${item.source || ""}|${item.filename || ""}`;
+    if (!byName.has(nameKey)) byName.set(nameKey, item);
+  }
+
+  let changed = false;
+  for (const item of selected) {
+    if (item.state === "ready") continue;
+    const history =
+      (item.jobId && byJobId.get(item.jobId)) ||
+      byName.get(`${item.ruleKey || item.rule?.key || ""}|${getItemName(item)}`);
+    if (!history) continue;
+    if (history.status && history.status !== item.state) {
+      item.state = history.status;
+      changed = true;
+    }
+    if (history.status === "done" && history.total_pages != null) {
+      item.message = `${PdfRvState.getStatusPrefix("done")} — ${history.total_pages} หน้า`;
+      changed = true;
+    } else if (history.error_message) {
+      item.message = history.error_message;
+      changed = true;
+    }
+    if (history.client_id) item.client_id = history.client_id;
+  }
+  if (changed) renderUploadPanel();
+}
+
+async function pollJob(item) {
+  while (true) {
+    if (item.cancelRequested || item.state === "cancelled") return;
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    if (item.cancelRequested || item.state === "cancelled") return;
+
+    let response;
+    try {
+      const rule = getItemRule(item);
+      response = await clientFetch(`${rule.jobApi}/${encodeURIComponent(item.jobId)}`);
+    } catch {
+      if (!pageActive) return;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      renderUploadPanel();
+      continue;
+    }
+
+    const payload = await parseResponse(response);
+    if (!response.ok) {
+      item.state = "failed";
+      item.message = payload.detail || PdfRvState.getStatusPrefix("failed");
+      renderUploadPanel();
+      return;
+    }
+
+    const job = payload.job || payload;
+    if (item.cancelRequested || item.state === "cancelled") return;
+    item.state = job.status === "done" ? "done" : job.status === "failed" ? "failed" : job.status;
+    if (job.client_id) item.client_id = job.client_id;
+    item.message = progressMessage(job);
+    renderUploadPanel();
+    if (job.status === "done" || job.status === "failed") return;
+  }
+}
+
+async function startUpload() {
+  if (uploading) return;
+  const readyItems = selected.filter((item) => getItemRule(item) && item.state === "ready" && item.file);
+  if (!readyItems.length) return;
+
+  uploading = true;
+  for (const item of readyItems) item.state = "uploading";
+  renderUploadPanel();
+
+  for (const item of readyItems) {
+    const formData = new FormData();
+    formData.append("file", item.file);
+    const rule = getItemRule(item);
+
+    let response;
+    try {
+      response = await clientFetch(rule.uploadApi, { method: "POST", body: formData });
+    } catch {
+      if (!pageActive) return;
+      item.state = "failed";
+      item.message = "เชื่อมต่อไม่ได้ / Connection failed";
+      continue;
+    }
+
+    const payload = await parseResponse(response);
+    if (!response.ok) {
+      item.state = "failed";
+      item.message = payload.detail || PdfRvState.getStatusPrefix("failed");
+      continue;
+    }
+
+    item.jobId = payload.job_id || payload.id || payload.jobId;
+    item.client_id = clientId;
+    item.state = "pending";
+    item.message = PdfRvState.getStatusPrefix("preparing");
+    renderUploadPanel();
+    void pollJob(item);
+  }
+
+  uploading = false;
+  renderUploadPanel();
+}
+
+function clearFiles() {
+  if (uploading) return;
+  selected = selected.filter((item) => PdfRvState.isForeignJob(item));
+  sessionStorage.removeItem(uploadStateKey);
+  renderUploadPanel();
+}
+
+fileInput.addEventListener("change", (event) => {
+  addFiles(event.target.files || []);
+  fileInput.value = "";
+});
+
+dropzone.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  dropzone.classList.add("dragover");
+});
+
+dropzone.addEventListener("dragleave", () => {
+  dropzone.classList.remove("dragover");
+});
+
+dropzone.addEventListener("drop", (event) => {
+  event.preventDefault();
+  dropzone.classList.remove("dragover");
+  addFiles(event.dataTransfer.files || []);
+});
+
+dropzone.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    fileInput.click();
+  }
+});
+
+clearBtn.addEventListener("click", clearFiles);
+uploadBtn.addEventListener("click", startUpload);
+refreshHistoryBtn.addEventListener("click", loadHistory);
+
+restoreUploadState();
+renderUploadPanel();
+if (
+  selected.some((item) => ["uploading", "pending", "processing"].includes(item.state)) ||
+  (navigationType === "back_forward" && Boolean(landingState.uploadOpen))
+) {
+  document.getElementById("universalUploadAccordion").open = true;
+}
+
+for (const el of [fileInput, dropzone, panel]) {
+  if (!el) continue;
+  el.addEventListener?.("change", () => saveUploadState());
+}
+
+window.addEventListener("pagehide", () => saveUploadState());
+
+const currentQueryKey = getLandingQueryKey();
+if (navigationType === "back_forward" && Array.isArray(landingState.cachedChain) && landingState.cachedChainQueryKey === currentQueryKey) {
+  latestChainPayload = landingState.cachedChain;
+  renderChainMap(landingState.cachedChain);
+  renderChainTree(landingState.cachedChain);
+  renderChainJson(landingState.cachedChain);
+}
+
+if (navigationType === "back_forward" && Array.isArray(landingState.cachedHistory) && landingState.cachedHistory.length > 0) {
+  renderHistory(landingState.cachedHistory);
+}
+if (navigationType === "back_forward" && document.getElementById("uploadHistoryAccordion").open) {
+  // Use cached history immediately on back/forward; refresh only when the user asks.
+  if (!(Array.isArray(landingState.cachedHistory) && landingState.cachedHistory.length > 0)) void loadHistory();
+}
+
+
+PdfRvState.createUploadViewSync({
+  getPageActive: () => pageActive,
+  getHistoryOpen: () => document.getElementById("uploadHistoryAccordion").open,
+  refreshActiveUploads: () => resumeSavedUploads(),
+  refreshHistory: () => loadHistory(),
+});
+
+async function resumeSavedUploads() {
+  try {
+    if (!pageActive) return;
+    const jobResponses = await Promise.allSettled(
+      TYPE_RULES.map(async (rule) => {
+        const res = await clientFetch(rule.historyApi.replace("/history", "/active"));
+        const jobs = await parseResponse(res);
+        if (!res.ok || !Array.isArray(jobs)) return [];
+        return jobs.map((job) => ({ ...job, label: rule.label, source: rule.key }));
+      })
+    );
+    const jobs = [];
+    for (const result of jobResponses) {
+      if (result.status === "fulfilled" && Array.isArray(result.value)) jobs.push(...result.value);
+    }
+    jobs.sort(compareQueueItems);
+    if (!jobs.length) return;
+    if (!pageActive) return;
+    if (jobs.length > 0) {
+      document.getElementById("universalUploadAccordion").open = true;
+    }
+    let changed = false;
+    const activeJobIds = new Set();
+    for (const job of jobs) {
+      if (!pageActive) return;
+      activeJobIds.add(job.id);
+      let item = selected.find((entry) => entry.jobId === job.id);
+      if (!item) {
+        const rule = TYPE_RULES.find((entry) => entry.pattern.test(job.filename || ""));
+        item = {
+          id: job.id,
+          signature: job.filename || job.id,
+          file: null,
+          name: job.filename || job.id,
+          size: null,
+          lastModified: null,
+          ruleKey: rule?.key || null,
+          rule: rule || null,
+          state: job.status === "done" ? "done" : job.status === "failed" ? "failed" : job.status,
+          message: progressMessage(job),
+          jobId: job.id,
+          client_id: job.client_id || "",
+          cancelRequested: Boolean(job.cancel_requested),
+        };
+        selected.push(item);
+        changed = true;
+      } else {
+        item.state = job.status === "done" ? "done" : job.status === "failed" ? "failed" : job.status;
+        item.client_id = job.client_id || item.client_id || "";
+        item.message = progressMessage(job);
+        changed = true;
+      }
+      if (item.state === "pending" || item.state === "processing") {
+        void pollJob(item);
+      }
+    }
+
+    const staleItems = selected.filter(
+      (item) =>
+        item.jobId &&
+        !activeJobIds.has(item.jobId) &&
+        ["uploading", "pending", "processing"].includes(item.state)
+    );
+    if (staleItems.length) {
+      const refreshed = await Promise.allSettled(staleItems.map((item) => refreshUploadJobState(item)));
+      if (refreshed.some((result) => result.status === "fulfilled" && result.value)) changed = true;
+      if (refreshed.some((result) => result.status === "fulfilled" && !result.value)) changed = true;
+    }
+    if (changed) renderUploadPanel();
+  } catch {
+    // Keep the restored UI even if active uploads cannot be refreshed.
+  }
+}
+</script>
+</body>
+</html>

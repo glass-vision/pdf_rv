@@ -1,0 +1,51 @@
+# Git and editor metadata
+.git/
+.gitignore
+.idea/
+.vscode/
+*.code-workspace
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local config and runtime data
+.env
+.env.*
+!.env.example
+data/
+logs/
+tmp/
+temp/
+
+# Python local artifacts
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+pip-wheel-metadata/
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Files not needed by the production image
+tests/
+scripts/
+pdf_rv/
+AGENTS.md
+CLAUDE.md
+SPEC-1-Receive-Voucher.md
+README.md
+docker-compose*.yml
+requirements-dev.txt

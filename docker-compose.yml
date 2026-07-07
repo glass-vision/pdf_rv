@@ -1,0 +1,24 @@
+services:
+  pdf-rv-api:
+    build: .
+    ports:
+      - "${APP_PORT:-8001}:${APP_PORT:-8001}"
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      APP_DATA_DIR: ${APP_DATA_DIR:-./data}
+      APP_PORT: ${APP_PORT:-8001}
+      PDF_STORAGE_MODE: ${PDF_STORAGE_MODE:-binary}
+      SQLITE_LOCKING_MODE: ${SQLITE_LOCKING_MODE:-auto}
+    volumes:
+      - ${APP_DATA_DIR:-./data}:/app/data
+      - ./app:/app/app
+    command: >
+      sh -c "[ -f /app/data ] && rm /app/data; mkdir -p /app/data &&
+      exec uvicorn app.main:app --host 0.0.0.0 --port ${APP_PORT:-8001} --reload --reload-dir /app/app"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "python -c \"import os; import urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('APP_PORT', '8000') + '/', timeout=5).read()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped

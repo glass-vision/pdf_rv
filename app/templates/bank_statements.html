@@ -1,0 +1,700 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} Report</title>
+  <link rel="stylesheet" href="/static/styles.css?v={{ static_version }}">
+  <script src="/static/browser_state.js?v={{ static_version }}"></script>
+  <script src="/static/ref_labels.js?v={{ static_version }}"></script>
+</head>
+<body>
+
+  <!-- Loading Overlay -->
+  <div id="loadingOverlay" class="loading-overlay">
+    <div class="loading-box">
+      <div class="spinner"></div>
+      <span id="loadingMsg">กำลังโหลด… / Loading…</span>
+    </div>
+  </div>
+
+  <main class="workbench">
+
+    <header class="page-header">
+      <div>
+        <span class="page-kicker">Bank Statement Workspace</span>
+        <h1>{{ title }}</h1>
+        <p class="subtle">นำเข้า ค้นหา และเรียกดู PDF / PDF import, search, and retrieval</p>
+      </div>
+      <nav>
+        <a href="/">หน้าแรก / Home</a>
+        <a href="/docs" target="_blank" rel="noreferrer">เอกสาร API / API Docs</a>
+      </nav>
+    </header>
+
+    <!-- Search panel -->
+    <section class="panel search-panel">
+      <div class="search-panel-heading">
+        <div>
+          <span class="panel-kicker">Primary Flow</span>
+          <h2>ค้นหา {{ title }}</h2>
+          <p class="subtle">ใช้เลข statement หรือช่วงวันที่เป็นแกน แล้วค่อยกรองด้วย ref ที่จำเป็น</p>
+        </div>
+        <span class="panel-badge">Bank flow</span>
+      </div>
+      <form id="searchForm">
+        <div class="search-row">
+          <input
+            type="text"
+            id="{{ search_fields[0].id }}"
+            class="search-input"
+            placeholder="{{ search_fields[0].placeholder | default('ค้นหา ' + search_fields[0].label + '…') }}"
+            autocomplete="off"
+          >
+        </div>
+
+        <details class="inner-accordion" id="advancedPanel">
+          <summary>ตัวกรองเพิ่มเติม / Advanced filters</summary>
+          <div class="filters-grid">
+            {% for field in search_fields[1:] %}
+            <label>{{ field.label }}<input type="{{ field.type | default('text') }}" id="{{ field.id }}" autocomplete="off"></label>
+            {% endfor %}
+            <label>Period From<input type="date" id="periodFrom"></label>
+            <label>Period To<input type="date" id="periodTo"></label>
+            {% for field in extra_filters %}
+            <label>{{ field.label }}<input type="{{ field.type | default('text') }}" id="{{ field.id }}" autocomplete="off"></label>
+            {% endfor %}
+            <label>Ref Type
+              <select id="refType">
+                <option value="">-</option>
+                {% for value, label in ref_types %}
+                <option value="{{ value }}">{{ label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Ref Value<input type="text" id="refValue"></label>
+          </div>
+        </details>
+
+        <div class="search-actions">
+          <button type="submit">ค้นหา / Search</button>
+          <button type="button" id="exportBtn" class="secondary">Export PDF</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Upload PDF -->
+    <details id="uploadAccordion" class="panel accordion">
+      <summary>อัปโหลด PDF / Upload PDF</summary>
+      <form id="uploadForm" class="upload-form">
+        <input type="file" id="pdfFile" accept="application/pdf" multiple required>
+        <button type="submit" id="uploadBtn">Upload</button>
+      </form>
+      <div id="uploadJobsList" class="upload-jobs-list"></div>
+
+      <details id="uploadHistoryAccordion" class="inner-accordion">
+        <summary>ประวัติการอัปโหลด / Upload History</summary>
+        <div id="uploadHistoryList" class="upload-jobs-list"></div>
+      </details>
+    </details>
+
+    <!-- Results -->
+    <section class="panel results-panel">
+      <div class="results-header">
+        <h2>ผลการค้นหา / Results</h2>
+        <span id="resultCount" class="subtle"></span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              {% for column in columns %}<th>{{ column.label }}</th>{% endfor %}
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="resultsBody">
+            <tr><td colspan="{{ columns | length + 1 }}" class="empty-msg">ยังไม่ได้ค้นหา / No search yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+<script>
+const config = {{ js_config | tojson }};
+const sessionStorage = PdfRvState.storage;
+const clientId = PdfRvState.getClientId();
+const CANCELLED_MESSAGE = "Cancelled by user";
+const pageStateKey = PdfRvState.key(config.api.replace(/^\//, "").replace(/\//g, "-"), "state");
+const resultsCacheKey = `${pageStateKey}:results`;
+const historyCacheKey = `${pageStateKey}:history`;
+const navigationType = performance.getEntriesByType("navigation")[0]?.type || "navigate";
+
+if (navigationType !== "back_forward") {
+  for (const key of [pageStateKey, resultsCacheKey, historyCacheKey]) {
+    sessionStorage.removeItem(key);
+  }
+}
+
+function readPageState() {
+  try {
+    return JSON.parse(sessionStorage.getItem(pageStateKey) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function savePageState(extra = {}) {
+  const state = { ...readPageState(), ...extra };
+  for (const field of config.searchFields || []) {
+    const el = document.getElementById(field.id);
+    if (el) state[field.id] = el.value;
+  }
+  for (const field of config.extraFilters || []) {
+    const el = document.getElementById(field.id);
+    if (el) state[field.id] = el.value;
+  }
+  state.periodFrom = document.getElementById("periodFrom").value;
+  state.periodTo = document.getElementById("periodTo").value;
+  state.refType = document.getElementById("refType").value;
+  state.refValue = document.getElementById("refValue").value;
+  state.advancedOpen = document.getElementById("advancedPanel").open;
+  state.uploadOpen = document.getElementById("uploadAccordion").open;
+  state.historyOpen = document.getElementById("uploadHistoryAccordion").open;
+  sessionStorage.setItem(pageStateKey, JSON.stringify(state));
+}
+
+function restorePageState() {
+  const state = readPageState();
+  const shouldRestore = navigationType === "back_forward";
+  for (const field of config.searchFields || []) {
+    const el = document.getElementById(field.id);
+    if (el) el.value = shouldRestore && state[field.id] != null ? state[field.id] : "";
+  }
+  for (const field of config.extraFilters || []) {
+    const el = document.getElementById(field.id);
+    if (el) el.value = shouldRestore && state[field.id] != null ? state[field.id] : "";
+  }
+  document.getElementById("periodFrom").value = shouldRestore && state.periodFrom != null ? state.periodFrom : "";
+  document.getElementById("periodTo").value = shouldRestore && state.periodTo != null ? state.periodTo : "";
+  document.getElementById("refType").value = shouldRestore && state.refType != null ? state.refType : "";
+  document.getElementById("refValue").value = shouldRestore && state.refValue != null ? state.refValue : "";
+  document.getElementById("advancedPanel").open = shouldRestore && Boolean(state.advancedOpen);
+  document.getElementById("uploadAccordion").open = shouldRestore && Boolean(state.uploadOpen);
+  document.getElementById("uploadHistoryAccordion").open = shouldRestore && Boolean(state.historyOpen);
+  return state;
+}
+
+function readSessionJson(key) {
+  try {
+    return JSON.parse(sessionStorage.getItem(key) || "null");
+  } catch {
+    return null;
+  }
+}
+
+function saveSessionJson(key, value) {
+  sessionStorage.setItem(key, JSON.stringify(value));
+}
+
+function clientFetch(input, init = {}) {
+  const headers = new Headers(init.headers || {});
+  headers.set("X-Client-Id", clientId);
+  return fetch(input, { ...init, headers });
+}
+
+function readCachedResults() {
+  return readSessionJson(resultsCacheKey);
+}
+
+function saveCachedResults(queryKey, payload) {
+  saveSessionJson(resultsCacheKey, { queryKey, payload, savedAt: Date.now() });
+}
+
+function readCachedHistory() {
+  return readSessionJson(historyCacheKey);
+}
+
+function saveCachedHistory(jobs) {
+  saveSessionJson(historyCacheKey, { jobs, savedAt: Date.now() });
+}
+
+const pageState = restorePageState();
+let pageActive = true;
+let currentRenderedRows = [];
+
+window.addEventListener("pagehide", () => {
+  pageActive = false;
+  savePageState();
+});
+
+window.addEventListener("pageshow", (event) => {
+  pageActive = true;
+  if (event.persisted) {
+    void resumeActiveUploadJobs();
+  }
+});
+
+PdfRvState.createUploadViewSync({
+  getPageActive: () => pageActive,
+  getHistoryOpen: () => document.getElementById("uploadHistoryAccordion").open,
+  refreshActiveUploads: () => resumeActiveUploadJobs(),
+  refreshHistory: () => loadUploadHistory(),
+});
+
+// ── Loading overlay ──
+const overlay = document.getElementById("loadingOverlay");
+const loadingMsg = document.getElementById("loadingMsg");
+
+function showLoading(msg) {
+  loadingMsg.textContent = msg || "กำลังโหลด… / Loading…";
+  overlay.classList.add("active");
+}
+function hideLoading() { overlay.classList.remove("active"); }
+
+// ── Search ──
+function buildQuery() {
+  const params = new URLSearchParams();
+  for (const field of config.searchFields) {
+    const el = document.getElementById(field.id);
+    if (!el) continue;
+    const value = (field.type === "date" ? el.value : el.value.trim());
+    if (value) params.set(field.param, value);
+  }
+  for (const field of (config.extraFilters || [])) {
+    const el = document.getElementById(field.id);
+    if (el && el.value) params.set(field.param, el.value);
+  }
+  const pf = document.getElementById("periodFrom").value;
+  const pt = document.getElementById("periodTo").value;
+  const rt = document.getElementById("refType").value;
+  const rv = document.getElementById("refValue").value.trim();
+  if (pf) params.set("period_from", pf);
+  if (pt) params.set("period_to", pt);
+  if (rt && rv) { params.set("ref_type", rt); params.set("ref_value", rv); }
+  return params;
+}
+
+async function parseResponse(res) {
+  const ct = res.headers.get("content-type") || "";
+  return ct.includes("application/json") ? res.json() : { detail: await res.text() };
+}
+
+function makeCell(value) {
+  const td = document.createElement("td");
+  td.textContent = value ?? "";
+  return td;
+}
+
+function renderMessage(msg) {
+  const body = document.getElementById("resultsBody");
+  const tr = document.createElement("tr");
+  const td = makeCell(msg);
+  td.colSpan = config.columns.length + 1;
+  td.className = "empty-msg";
+  body.innerHTML = "";
+  tr.appendChild(td);
+  body.appendChild(tr);
+  document.getElementById("resultCount").textContent = "";
+  currentRenderedRows = [];
+}
+
+function renderRows(rows) {
+  const body = document.getElementById("resultsBody");
+  body.innerHTML = "";
+  if (!Array.isArray(rows) || rows.length === 0) {
+    renderMessage("ไม่พบข้อมูล");
+    return;
+  }
+  document.getElementById("resultCount").textContent = `${rows.length} รายการ`;
+  currentRenderedRows = Array.isArray(rows) ? rows : [];
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    tr.className = "result-row";
+    for (const col of config.columns) {
+      if (col.key === "refs") {
+        const td = makeCell(Object.entries(row.refs || {}).map(([k, v]) => `${refLabels[k] || k}: ${v}`).join("\n"));
+        td.className = "refs-cell";
+        tr.appendChild(td);
+      } else {
+        tr.appendChild(makeCell(row[col.key]));
+      }
+    }
+    const key = row[config.keyColumn];
+    const url = config.pageResults
+      ? `${config.pagePdfBase}/${encodeURIComponent(key)}.pdf`
+      : `${config.api}/${encodeURIComponent(key)}.pdf`;
+    const actionCell = document.createElement("td");
+    actionCell.appendChild(PdfRvState.createPdfLink(url));
+    tr.appendChild(actionCell);
+    tr.classList.add("pdf-link-row");
+    body.appendChild(tr);
+  }
+}
+
+async function expandPageRows(rows) {
+  if (!config.pageResults) return rows;
+  const expanded = [];
+  for (const row of rows || []) {
+    const statementKey = row.statement_reference || row.statement_key || row[config.rootKeyColumn || "statement_reference"];
+    if (!statementKey) continue;
+    const res = await fetch(`${config.api}/${encodeURIComponent(statementKey)}${config.pagesApiSuffix || "/pages"}`);
+    const payload = await parseResponse(res);
+    if (!res.ok || !Array.isArray(payload)) continue;
+    for (const page of payload) {
+      expanded.push({
+        ...page,
+        statement_reference: page.statement_reference || row.statement_reference || "",
+        statement_key: page.statement_key || row.statement_key || "",
+        page_order: page.page_order,
+        refs: page.refs || {},
+      });
+    }
+  }
+  return expanded;
+}
+
+async function runSearch() {
+  if (!pageActive) return;
+  showLoading("กำลังค้นหา… / Searching…");
+  try {
+    const params = buildQuery();
+    const queryKey = params.toString();
+    const res = await fetch(`${config.api}?${params}`);
+    const payload = await parseResponse(res);
+    if (!res.ok) { renderMessage(payload.detail || "ค้นหาไม่สำเร็จ"); return; }
+    const displayRows = await expandPageRows(payload);
+    renderRows(displayRows);
+    saveCachedResults(queryKey, displayRows);
+  } finally {
+    hideLoading();
+    savePageState({ searchSubmitted: true });
+  }
+}
+
+document.getElementById("searchForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await runSearch();
+});
+
+for (const id of [...(config.searchFields || []).map((field) => field.id), ...(config.extraFilters || []).map((field) => field.id), "periodFrom", "periodTo", "refType", "refValue"]) {
+  const el = document.getElementById(id);
+  if (!el) continue;
+  el.addEventListener("input", () => savePageState());
+  el.addEventListener("change", () => savePageState());
+}
+
+document.getElementById("exportBtn").addEventListener("click", () => {
+  if (config.pageResults) {
+    const pageKeys = (currentRenderedRows || [])
+      .map((row) => row && row.page_key)
+      .filter((value) => typeof value === "string" && value);
+    if (pageKeys.length > 0) {
+      const params = new URLSearchParams({ keys: pageKeys.join(",") });
+      window.open(`${config.api}/page-selection/export/pdf?${params}`, "_blank");
+      return;
+    }
+  }
+  window.open(`${config.api}/export/by-filter/pdf?${buildQuery()}`, "_blank");
+});
+
+// ── Upload job progress UI ──
+function createUploadJobElement(filename, jobId, jobClientId = clientId) {
+  const wrap = document.createElement("div");
+  wrap.className = "upload-job";
+  if (jobId) wrap.dataset.jobId = jobId;
+
+  const header = document.createElement("div");
+  header.className = "upload-job-header";
+
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "upload-job-title";
+
+  const nameEl = document.createElement("div");
+  nameEl.className = "upload-job-name";
+  nameEl.textContent = filename;
+  titleWrap.appendChild(nameEl);
+
+  const originBadge = PdfRvState.createOriginBadge({ client_id: jobClientId });
+  if (originBadge) titleWrap.appendChild(originBadge);
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "upload-cancel-btn";
+  cancelBtn.textContent = "หยุด";
+  cancelBtn.addEventListener("click", async () => {
+    cancelBtn.disabled = true;
+    cancelBtn.textContent = "กำลังหยุด...";
+    try {
+      const response = await clientFetch(`${config.api}/upload/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+      const payload = await parseResponse(response);
+      if (!response.ok) {
+        if (response.status === 404 || response.status === 409) {
+          cancelBtn.style.display = "none";
+        } else {
+          cancelBtn.disabled = false;
+          cancelBtn.textContent = "หยุด";
+        }
+        textEl.textContent = `ยกเลิกไม่สำเร็จ: ${payload.detail || "งานอัปโหลดอาจจบแล้ว"}`;
+        return;
+      }
+      textEl.textContent = "กำลังยกเลิก...";
+    } catch {
+      cancelBtn.disabled = false;
+      cancelBtn.textContent = "หยุด";
+      textEl.textContent = "ยกเลิกไม่สำเร็จ: เชื่อมต่อล้มเหลว";
+    }
+  });
+
+  header.appendChild(titleWrap);
+  header.appendChild(cancelBtn);
+
+  const track = document.createElement("div");
+  track.className = "upload-progress-track";
+  const fillEl = document.createElement("div");
+  fillEl.className = "upload-progress-fill";
+  fillEl.style.width = "0%";
+  track.appendChild(fillEl);
+
+  const textEl = document.createElement("div");
+  textEl.className = "upload-status-text";
+
+  wrap.appendChild(header);
+  wrap.appendChild(track);
+  wrap.appendChild(textEl);
+  document.getElementById("uploadJobsList").appendChild(wrap);
+
+  return { fillEl, textEl, cancelBtn };
+}
+
+function getUploadJobElement(jobId) {
+  return jobId ? document.querySelector(`.upload-job[data-job-id="${jobId}"]`) : null;
+}
+
+function doneMessage(job) {
+  let text = `สำเร็จ / Done: ${job.total_pages ?? "?"} หน้า, พบ ${job.statement_count ?? 0} statement`;
+  if (job.warnings && job.warnings.length) text += ` (${job.warnings.length} warnings)`;
+  return text;
+}
+
+function renderUploadStatus(elements, job) {
+  const { fillEl, textEl, cancelBtn } = elements;
+  const label = PdfRvState.getJobLabel(job);
+  const finished = job.status === "done" || job.status === "failed";
+  const canCancel = !job.client_id || job.client_id === clientId;
+  cancelBtn.style.display = finished || !canCancel ? "none" : "";
+  fillEl.classList.toggle("error", job.status === "failed" && job.error_message !== CANCELLED_MESSAGE);
+
+  if (job.status === "done") {
+    fillEl.style.width = "100%";
+    textEl.textContent = doneMessage(job);
+    return;
+  }
+  if (job.status === "pending") {
+    textEl.textContent = PdfRvState.formatLabeledStatus("preparing", label, job.total_pages ? ` (${job.processed_pages ?? 0}/${job.total_pages} pages)` : "");
+    return;
+  }
+  if (job.status === "failed") {
+    fillEl.style.width = "100%";
+    textEl.textContent = job.error_message === CANCELLED_MESSAGE
+      ? `${PdfRvState.getStatusPrefix("cancelled")} (${job.processed_pages ?? 0}/${job.total_pages ?? "?"} pages)`
+      : `${PdfRvState.getStatusPrefix("failed")}: ${job.error_message ?? PdfRvState.getStatusPrefix("unknown")}`;
+    return;
+  }
+  const total = job.total_pages;
+  const processed = job.processed_pages ?? 0;
+  if (total) {
+    const pct = Math.min(100, Math.round((processed / total) * 100));
+    fillEl.style.width = `${pct}%`;
+    textEl.textContent = PdfRvState.formatLabeledStatus("processing", label, ` — ${processed}/${total} pages (${pct}%)`);
+  } else {
+    fillEl.style.width = "0%";
+    textEl.textContent = PdfRvState.formatLabeledStatus("preparing", label);
+  }
+}
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+async function pollUploadJobInBackground(jobId, elements) {
+  while (true) {
+    if (!pageActive) return;
+    let res, job;
+    try {
+      res = await clientFetch(`${config.api}/upload/${encodeURIComponent(jobId)}`);
+      job = await parseResponse(res);
+    } catch {
+      if (!pageActive) return;
+      await sleep(1000);
+      continue;
+    }
+    if (res.status === 404) { elements.textEl.textContent = "ไม่พบสถานะงานนี้"; return; }
+    if (!res.ok) { await sleep(1000); continue; }
+    renderUploadStatus(elements, job);
+    if (job.status === "done" || job.status === "failed") {
+      if (job.status === "done") await runSearch();
+      const historyAccordion = document.getElementById("uploadHistoryAccordion");
+      if (historyAccordion.open) loadUploadHistory();
+      return;
+    }
+    await sleep(1000);
+  }
+}
+
+document.getElementById("uploadForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fileInput = document.getElementById("pdfFile");
+  if (!fileInput.files.length) return;
+  const files = Array.from(fileInput.files);
+  fileInput.value = "";
+  for (const file of files) {
+    const formData = new FormData();
+    formData.append("file", file);
+    let res, result;
+    try {
+      res = await clientFetch(`${config.api}/upload`, { method: "POST", body: formData });
+      result = await parseResponse(res);
+    } catch {
+      if (!pageActive) return;
+      const els = createUploadJobElement(file.name, "", clientId);
+      els.cancelBtn.style.display = "none";
+      els.textEl.textContent = "อัปโหลดไม่สำเร็จ: เชื่อมต่อล้มเหลว";
+      continue;
+    }
+    if (!res.ok) {
+      const els = createUploadJobElement(file.name, "", clientId);
+      els.cancelBtn.style.display = "none";
+      els.textEl.textContent = `อัปโหลดไม่สำเร็จ: ${result.detail || "ไม่ทราบสาเหตุ"}`;
+      continue;
+    }
+    const els = createUploadJobElement(file.name, result.job_id, clientId);
+    renderUploadStatus(els, { status: "pending", total_pages: null, processed_pages: 0 });
+    pollUploadJobInBackground(result.job_id, els);
+  }
+});
+
+// ── Upload history ──
+function renderHistoryEntry(job) {
+  const wrap = document.createElement("div");
+  wrap.className = "upload-job";
+
+  const header = document.createElement("div");
+  header.className = "upload-job-header";
+
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "upload-job-title";
+
+  const nameEl = document.createElement("div");
+  nameEl.className = "upload-job-name";
+  nameEl.textContent = job.filename;
+  titleWrap.appendChild(nameEl);
+
+  const originBadge = PdfRvState.createOriginBadge(job);
+  if (originBadge) titleWrap.appendChild(originBadge);
+
+  const timeEl = document.createElement("div");
+  timeEl.className = "upload-history-time";
+  timeEl.textContent = new Date(job.created_at).toLocaleString("th-TH");
+
+  header.appendChild(titleWrap);
+  header.appendChild(timeEl);
+
+  const textEl = document.createElement("div");
+  textEl.className = "upload-status-text";
+  if (job.status === "done") {
+    textEl.textContent = doneMessage(job);
+  } else if (job.error_message === CANCELLED_MESSAGE) {
+    textEl.textContent = `${PdfRvState.getStatusPrefix("cancelled")} (${job.processed_pages ?? 0}/${job.total_pages ?? "?"} pages)`;
+  } else {
+    textEl.textContent = `${PdfRvState.getStatusPrefix("failed")}: ${job.error_message ?? PdfRvState.getStatusPrefix("unknown")}`;
+    textEl.classList.add("upload-status-error");
+  }
+
+  wrap.appendChild(header);
+  wrap.appendChild(textEl);
+  return wrap;
+}
+
+async function loadUploadHistory() {
+  if (!pageActive) return;
+  const list = document.getElementById("uploadHistoryList");
+  list.innerHTML = "";
+  try {
+    const res = await clientFetch(`${config.api}/upload/history`);
+    const jobs = await parseResponse(res);
+    if (!res.ok || !Array.isArray(jobs)) return;
+    saveCachedHistory(jobs);
+    if (jobs.length === 0) {
+      list.innerHTML = '<div class="upload-status-text">ยังไม่มีประวัติ</div>';
+      return;
+    }
+    for (const job of jobs) list.appendChild(renderHistoryEntry(job));
+  } catch {
+    // Ignore — history won't load this time.
+  }
+}
+
+function restoreCachedUploadHistory() {
+  const cached = readCachedHistory();
+  if (!cached || !Array.isArray(cached.jobs)) return false;
+  const list = document.getElementById("uploadHistoryList");
+  list.innerHTML = "";
+  if (cached.jobs.length === 0) {
+    list.innerHTML = '<div class="upload-status-text">ยังไม่มีประวัติ</div>';
+    return true;
+  }
+  for (const job of cached.jobs) list.appendChild(renderHistoryEntry(job));
+  return true;
+}
+
+document.getElementById("uploadHistoryAccordion").addEventListener("toggle", (e) => {
+  if (e.target.open) {
+    if (!restoreCachedUploadHistory()) loadUploadHistory();
+  }
+});
+
+document.getElementById("advancedPanel").addEventListener("toggle", () => savePageState());
+document.getElementById("uploadAccordion").addEventListener("toggle", () => savePageState());
+document.getElementById("uploadHistoryAccordion").addEventListener("toggle", () => savePageState());
+window.addEventListener("pagehide", () => savePageState());
+
+// ── Resume active jobs on page load ──
+async function resumeActiveUploadJobs() {
+  try {
+    const res = await clientFetch(`${config.api}/upload/active`);
+    const jobs = await parseResponse(res);
+    if (!res.ok || !Array.isArray(jobs) || jobs.length === 0) return;
+    document.getElementById("uploadAccordion").open = true;
+    for (const job of jobs) {
+      const existing = getUploadJobElement(job.id);
+      if (existing) {
+        renderUploadStatus(
+          {
+            fillEl: existing.querySelector(".upload-progress-fill"),
+            textEl: existing.querySelector(".upload-status-text"),
+            cancelBtn: existing.querySelector(".upload-cancel-btn"),
+          },
+          job
+        );
+        continue;
+      }
+      const els = createUploadJobElement(job.filename, job.id, job.client_id);
+      renderUploadStatus(els, job);
+      pollUploadJobInBackground(job.id, els);
+    }
+  } catch {
+    // Ignore.
+  }
+}
+
+const cachedResults = readCachedResults();
+if (navigationType === "back_forward" && cachedResults && cachedResults.queryKey === buildQuery().toString()) {
+  renderRows(cachedResults.payload);
+}
+
+if (navigationType === "back_forward" && pageState.historyOpen) {
+  if (!restoreCachedUploadHistory()) loadUploadHistory();
+}
+</script>
+</body>
+</html>

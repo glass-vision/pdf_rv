@@ -1,0 +1,685 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Credit Memos Report</title>
+  <link rel="stylesheet" href="/static/styles.css?v={{ static_version }}">
+  <script src="/static/browser_state.js?v={{ static_version }}"></script>
+  <script src="/static/ref_labels.js?v={{ static_version }}"></script>
+</head>
+<body>
+
+  <div id="loadingOverlay" class="loading-overlay">
+    <div class="loading-box">
+      <div class="spinner"></div>
+      <span id="loadingMsg">กำลังโหลด… / Loading…</span>
+    </div>
+  </div>
+
+  <main class="workbench">
+
+    <header class="page-header">
+      <div>
+        <span class="page-kicker">Credit Memo Workspace</span>
+        <h1>Credit Memos</h1>
+        <p class="subtle">นำเข้า ค้นหา และเรียกดู PDF / PDF import, search, and retrieval</p>
+      </div>
+      <nav>
+        <a href="/">หน้าแรก / Home</a>
+        <a href="/docs" target="_blank" rel="noreferrer">เอกสาร API / API Docs</a>
+      </nav>
+    </header>
+
+    <section class="panel search-panel">
+      <div class="search-panel-heading">
+        <div>
+          <span class="panel-kicker">Primary Flow</span>
+          <h2>ค้นหา Credit Memo</h2>
+          <p class="subtle">ดู Credit Memo โดยตรง หรือหาเส้นเชื่อมกลับไปที่ Invoice ผ่าน ref</p>
+        </div>
+        <span class="panel-badge">Search first</span>
+      </div>
+      <form id="searchForm">
+        <div class="search-row">
+          <input
+            type="text"
+            id="creditMemoNumber"
+            class="search-input"
+            placeholder="ค้นหา Credit Memo No... เช่น CZ2506-0001"
+            autocomplete="off"
+          >
+        </div>
+
+        <details class="inner-accordion" id="advancedPanel">
+          <summary>ตัวกรองเพิ่มเติม / Advanced filters</summary>
+          <div class="filters-grid">
+            <label>
+              Date From
+              <input type="date" id="dateFrom">
+            </label>
+            <label>
+              Date To
+              <input type="date" id="dateTo">
+            </label>
+            <label>
+              Ref Type
+              <select id="refType">
+                <option value="">-</option>
+                <option value="invoice_no">Invoice No.</option>
+                <option value="customer_code">Customer Code</option>
+              </select>
+            </label>
+            <label>
+              Ref Value
+              <input type="text" id="refValue" placeholder="e.g. 2120160999">
+            </label>
+          </div>
+        </details>
+
+        <div class="search-actions">
+          <button type="submit" id="searchBtn">ค้นหา / Search</button>
+          <button type="button" id="exportBtn" class="secondary">Export PDF</button>
+        </div>
+      </form>
+    </section>
+
+    <details id="uploadAccordion" class="panel accordion">
+      <summary>อัปโหลด PDF / Upload PDF</summary>
+      <form id="uploadForm" class="upload-form">
+        <input type="file" id="pdfFile" accept="application/pdf" multiple required>
+        <button type="submit" id="uploadBtn">Upload</button>
+      </form>
+      <div id="uploadJobsList" class="upload-jobs-list"></div>
+      <pre id="uploadResult" aria-live="polite" style="display:none"></pre>
+
+      <details id="uploadHistoryAccordion" class="inner-accordion">
+        <summary>ประวัติการอัปโหลด / Upload History</summary>
+        <div id="uploadHistoryList" class="upload-jobs-list"></div>
+      </details>
+    </details>
+
+    <section class="panel results-panel">
+      <div class="results-header">
+        <h2>ผลการค้นหา / Results</h2>
+        <span id="resultCount" class="subtle"></span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Credit Memo No.</th>
+              <th>Date</th>
+              <th>Name</th>
+              <th>Customer Code</th>
+              <th>Refs</th>
+              <th>Pages</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="resultsBody">
+            <tr><td colspan="7" class="empty-msg">ยังไม่ได้ค้นหา / No search yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+<script>
+const CANCELLED_MESSAGE = "Cancelled by user";
+const overlay = document.getElementById("loadingOverlay");
+const loadingMsg = document.getElementById("loadingMsg");
+const sessionStorage = PdfRvState.storage;
+const clientId = PdfRvState.getClientId();
+const pageStateKey = PdfRvState.key("credit-memos", "state");
+const resultsCacheKey = `${pageStateKey}:results`;
+const historyCacheKey = `${pageStateKey}:history`;
+const navigationType = performance.getEntriesByType("navigation")[0]?.type || "navigate";
+
+if (navigationType !== "back_forward") {
+  for (const key of [pageStateKey, resultsCacheKey, historyCacheKey]) {
+    sessionStorage.removeItem(key);
+  }
+}
+
+function readPageState() {
+  try {
+    return JSON.parse(sessionStorage.getItem(pageStateKey) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function savePageState(extra = {}) {
+  const state = { ...readPageState(), ...extra };
+  state.creditMemoNumber = document.getElementById("creditMemoNumber").value;
+  state.dateFrom = document.getElementById("dateFrom").value;
+  state.dateTo = document.getElementById("dateTo").value;
+  state.refType = document.getElementById("refType").value;
+  state.refValue = document.getElementById("refValue").value;
+  state.advancedOpen = document.getElementById("advancedPanel").open;
+  state.uploadOpen = document.getElementById("uploadAccordion").open;
+  state.historyOpen = document.getElementById("uploadHistoryAccordion").open;
+  sessionStorage.setItem(pageStateKey, JSON.stringify(state));
+}
+
+function restorePageState() {
+  const state = readPageState();
+  const shouldRestore = navigationType === "back_forward";
+  document.getElementById("creditMemoNumber").value = shouldRestore && state.creditMemoNumber != null ? state.creditMemoNumber : "";
+  document.getElementById("dateFrom").value = shouldRestore && state.dateFrom != null ? state.dateFrom : "";
+  document.getElementById("dateTo").value = shouldRestore && state.dateTo != null ? state.dateTo : "";
+  document.getElementById("refType").value = shouldRestore && state.refType != null ? state.refType : "";
+  document.getElementById("refValue").value = shouldRestore && state.refValue != null ? state.refValue : "";
+  document.getElementById("advancedPanel").open = shouldRestore && Boolean(state.advancedOpen);
+  document.getElementById("uploadAccordion").open = shouldRestore && Boolean(state.uploadOpen);
+  document.getElementById("uploadHistoryAccordion").open = shouldRestore && Boolean(state.historyOpen);
+  return state;
+}
+
+function readSessionJson(key) {
+  try {
+    return JSON.parse(sessionStorage.getItem(key) || "null");
+  } catch {
+    return null;
+  }
+}
+
+function saveSessionJson(key, value) {
+  sessionStorage.setItem(key, JSON.stringify(value));
+}
+
+function clientFetch(input, init = {}) {
+  const headers = new Headers(init.headers || {});
+  headers.set("X-Client-Id", clientId);
+  return fetch(input, { ...init, headers });
+}
+
+function readCachedResults() {
+  return readSessionJson(resultsCacheKey);
+}
+
+function saveCachedResults(queryKey, payload) {
+  saveSessionJson(resultsCacheKey, { queryKey, payload, savedAt: Date.now() });
+}
+
+function readCachedHistory() {
+  return readSessionJson(historyCacheKey);
+}
+
+function saveCachedHistory(jobs) {
+  saveSessionJson(historyCacheKey, { jobs, savedAt: Date.now() });
+}
+
+const pageState = restorePageState();
+let pageActive = true;
+
+window.addEventListener("pagehide", () => {
+  pageActive = false;
+  savePageState();
+});
+
+window.addEventListener("pageshow", (event) => {
+  pageActive = true;
+  if (event.persisted) {
+    void resumeActiveUploadJobs();
+  }
+});
+
+PdfRvState.createUploadViewSync({
+  getPageActive: () => pageActive,
+  getHistoryOpen: () => document.getElementById("uploadHistoryAccordion").open,
+  refreshActiveUploads: () => resumeActiveUploadJobs(),
+  refreshHistory: () => loadUploadHistory(),
+});
+
+function buildQuery() {
+  const params = new URLSearchParams();
+  const creditMemoNumber = document.getElementById("creditMemoNumber").value.trim();
+  const dateFrom = document.getElementById("dateFrom").value;
+  const dateTo = document.getElementById("dateTo").value;
+  const refType = document.getElementById("refType").value;
+  const refValue = document.getElementById("refValue").value.trim();
+  if (creditMemoNumber) params.set("credit_memo_number", creditMemoNumber);
+  if (dateFrom) params.set("date_from", dateFrom);
+  if (dateTo) params.set("date_to", dateTo);
+  if (refType && refValue) {
+    params.set("ref_type", refType);
+    params.set("ref_value", refValue);
+  }
+  return params;
+}
+
+async function parseResponse(res) {
+  const ct = res.headers.get("content-type") || "";
+  return ct.includes("application/json") ? res.json() : { detail: await res.text() };
+}
+
+function showLoading(msg = "กำลังโหลด… / Loading…") {
+  loadingMsg.textContent = msg;
+  overlay.classList.add("active");
+}
+
+function hideLoading() {
+  overlay.classList.remove("active");
+}
+
+function showUploadResult(value) {
+  const el = document.getElementById("uploadResult");
+  el.style.display = "block";
+  el.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+function makeCell(value) {
+  const td = document.createElement("td");
+  td.textContent = value ?? "";
+  return td;
+}
+
+function renderMessage(msg) {
+  const body = document.getElementById("resultsBody");
+  body.innerHTML = "";
+  const tr = document.createElement("tr");
+  const td = makeCell(msg);
+  td.colSpan = 7;
+  td.className = "empty-msg";
+  tr.appendChild(td);
+  body.appendChild(tr);
+  document.getElementById("resultCount").textContent = "";
+}
+
+function renderRows(rows) {
+  const body = document.getElementById("resultsBody");
+  body.innerHTML = "";
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    renderMessage("ไม่พบข้อมูล / No data found");
+    return;
+  }
+
+  document.getElementById("resultCount").textContent = `${rows.length} records`;
+
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    tr.className = "result-row";
+
+    const refsText = Object.entries(row.refs || {})
+      .map(([k, v]) => `${refLabels[k] || k}: ${v}`)
+      .join("\n");
+
+    tr.appendChild(makeCell(row.credit_memo_number));
+    tr.appendChild(makeCell(row.credit_memo_date));
+    tr.appendChild(makeCell(row.name));
+    tr.appendChild(makeCell(row.customer_code));
+    const refsCell = makeCell(refsText);
+    refsCell.className = "refs-cell";
+    tr.appendChild(refsCell);
+    tr.appendChild(makeCell(row.assembled_page_count));
+
+    const pdfUrl = `/api/credit-memos/${encodeURIComponent(row.credit_memo_number)}.pdf`;
+    const actionCell = document.createElement("td");
+    actionCell.appendChild(PdfRvState.createPdfLink(pdfUrl));
+    tr.appendChild(actionCell);
+    tr.classList.add("pdf-link-row");
+    body.appendChild(tr);
+  }
+}
+
+async function runSearch() {
+  if (!pageActive) return;
+  showLoading("กำลังค้นหา… / Searching…");
+  try {
+    if (!pageActive) return;
+    const params = buildQuery();
+    const queryKey = params.toString();
+    const res = await fetch(`/api/credit-memos?${params}`);
+    const payload = await parseResponse(res);
+    if (!res.ok) {
+      renderMessage(payload.detail || "Search failed");
+      return;
+    }
+    renderRows(payload);
+    saveCachedResults(queryKey, payload);
+  } finally {
+    hideLoading();
+    savePageState({ searchSubmitted: true });
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createUploadJobElement(filename, jobId, jobClientId = clientId) {
+  const wrap = document.createElement("div");
+  wrap.className = "upload-job";
+  if (jobId) wrap.dataset.jobId = jobId;
+
+  const header = document.createElement("div");
+  header.className = "upload-job-header";
+
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "upload-job-title";
+
+  const nameEl = document.createElement("div");
+  nameEl.className = "upload-job-name";
+  nameEl.textContent = filename;
+  titleWrap.appendChild(nameEl);
+
+  const originBadge = PdfRvState.createOriginBadge({ client_id: jobClientId });
+  if (originBadge) titleWrap.appendChild(originBadge);
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "upload-cancel-btn";
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.addEventListener("click", async () => {
+    cancelBtn.disabled = true;
+    cancelBtn.textContent = "Cancelling...";
+    try {
+      const response = await clientFetch(`/api/credit-memos/upload/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+      const payload = await parseResponse(response);
+      if (!response.ok) {
+        if (response.status === 404 || response.status === 409) {
+          cancelBtn.style.display = "none";
+        } else {
+          cancelBtn.disabled = false;
+          cancelBtn.textContent = "Cancel";
+        }
+        textEl.textContent = `Cancel failed: ${payload.detail || "the upload may already be finished"}`;
+        return;
+      }
+      textEl.textContent = "Cancelling...";
+    } catch {
+      cancelBtn.disabled = false;
+      cancelBtn.textContent = "Cancel";
+      textEl.textContent = "Cancel failed: connection failed";
+    }
+  });
+
+  header.appendChild(titleWrap);
+  header.appendChild(cancelBtn);
+
+  const track = document.createElement("div");
+  track.className = "upload-progress-track";
+  const fillEl = document.createElement("div");
+  fillEl.className = "upload-progress-fill";
+  fillEl.style.width = "0%";
+  track.appendChild(fillEl);
+
+  const textEl = document.createElement("div");
+  textEl.className = "upload-status-text";
+
+  wrap.appendChild(header);
+  wrap.appendChild(track);
+  wrap.appendChild(textEl);
+  document.getElementById("uploadJobsList").appendChild(wrap);
+
+  return { fillEl, textEl, cancelBtn };
+}
+
+function getUploadJobElement(jobId) {
+  return jobId ? document.querySelector(`.upload-job[data-job-id="${jobId}"]`) : null;
+}
+
+function renderUploadStatus(elements, job) {
+  const { fillEl, textEl, cancelBtn } = elements;
+  const label = PdfRvState.getJobLabel(job);
+  const finished = job.status === "done" || job.status === "failed";
+  const canCancel = !job.client_id || job.client_id === clientId;
+  cancelBtn.style.display = finished || !canCancel ? "none" : "";
+  fillEl.classList.toggle("error", job.status === "failed" && job.error_message !== CANCELLED_MESSAGE);
+
+  if (job.status === "done") {
+    fillEl.style.width = "100%";
+    let text = `${PdfRvState.getStatusPrefix("done")}: ${job.total_pages ?? "?"} pages, ${job.credit_memo_count ?? 0} credit memos`;
+    if (job.warnings && job.warnings.length) text += ` (${job.warnings.length} warnings)`;
+    textEl.textContent = text;
+    return;
+  }
+
+  if (job.status === "pending") {
+    textEl.textContent = PdfRvState.formatLabeledStatus("preparing", label, job.total_pages ? ` (${job.processed_pages ?? 0}/${job.total_pages} pages)` : "");
+    return;
+  }
+
+  if (job.status === "failed") {
+    fillEl.style.width = "100%";
+    textEl.textContent = job.error_message === CANCELLED_MESSAGE
+      ? `${PdfRvState.getStatusPrefix("cancelled")} (${job.processed_pages ?? 0}/${job.total_pages ?? "?"} pages)`
+      : `${PdfRvState.getStatusPrefix("failed")}: ${job.error_message ?? PdfRvState.getStatusPrefix("unknown")}`;
+    return;
+  }
+
+  const total = job.total_pages;
+  const processed = job.processed_pages ?? 0;
+  if (total) {
+    const percent = Math.min(100, Math.round((processed / total) * 100));
+    fillEl.style.width = `${percent}%`;
+    textEl.textContent = PdfRvState.formatLabeledStatus("processing", label, ` — ${processed}/${total} pages (${percent}%)`);
+  } else {
+    fillEl.style.width = "0%";
+    textEl.textContent = PdfRvState.formatLabeledStatus("preparing", label);
+  }
+}
+
+async function pollUploadJobInBackground(jobId, elements) {
+  while (true) {
+    if (!pageActive) return;
+    let res, job;
+    try {
+      if (!pageActive) return;
+      res = await clientFetch(`/api/credit-memos/upload/${encodeURIComponent(jobId)}`);
+      job = await parseResponse(res);
+    } catch {
+      if (!pageActive) return;
+      await sleep(1000);
+      continue;
+    }
+    if (!pageActive) return;
+    if (res.status === 404) {
+      elements.textEl.textContent = "Upload job not found";
+      return;
+    }
+    if (!res.ok) {
+      await sleep(1000);
+      continue;
+    }
+    renderUploadStatus(elements, job);
+    if (job.status === "done" || job.status === "failed") {
+      if (job.status === "done") await runSearch();
+      const historyAccordion = document.getElementById("uploadHistoryAccordion");
+      if (historyAccordion.open) loadUploadHistory();
+      return;
+    }
+    await sleep(1000);
+  }
+}
+
+function renderHistoryEntry(job) {
+  const wrap = document.createElement("div");
+  wrap.className = "upload-job";
+
+  const header = document.createElement("div");
+  header.className = "upload-job-header";
+
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "upload-job-title";
+
+  const nameEl = document.createElement("div");
+  nameEl.className = "upload-job-name";
+  nameEl.textContent = job.filename;
+  titleWrap.appendChild(nameEl);
+
+  const originBadge = PdfRvState.createOriginBadge(job);
+  if (originBadge) titleWrap.appendChild(originBadge);
+
+  const timeEl = document.createElement("div");
+  timeEl.className = "upload-history-time";
+  timeEl.textContent = new Date(job.created_at).toLocaleString("th-TH");
+
+  header.appendChild(titleWrap);
+  header.appendChild(timeEl);
+
+  const textEl = document.createElement("div");
+  textEl.className = "upload-status-text";
+  if (job.status === "done") {
+    let text = `สำเร็จ / Done: ${job.total_pages ?? "?"} pages, ${job.credit_memo_count ?? 0} credit memos`;
+    if (job.warnings && job.warnings.length) text += ` (${job.warnings.length} warnings)`;
+    textEl.textContent = text;
+  } else if (job.error_message === CANCELLED_MESSAGE) {
+    textEl.textContent = `${PdfRvState.getStatusPrefix("cancelled")} (${job.processed_pages ?? 0}/${job.total_pages ?? "?"} pages)`;
+  } else {
+    textEl.textContent = `${PdfRvState.getStatusPrefix("failed")}: ${job.error_message ?? PdfRvState.getStatusPrefix("unknown")}`;
+    textEl.classList.add("upload-status-error");
+  }
+
+  wrap.appendChild(header);
+  wrap.appendChild(textEl);
+  return wrap;
+}
+
+async function loadUploadHistory() {
+  if (!pageActive) return;
+  const list = document.getElementById("uploadHistoryList");
+  list.innerHTML = "";
+  try {
+    if (!pageActive) return;
+    const res = await clientFetch("/api/credit-memos/upload/history");
+    const jobs = await parseResponse(res);
+    if (!res.ok || !Array.isArray(jobs)) return;
+    saveCachedHistory(jobs);
+    if (jobs.length === 0) {
+      list.innerHTML = '<div class="upload-status-text">No history</div>';
+      return;
+    }
+    for (const job of jobs) list.appendChild(renderHistoryEntry(job));
+  } catch {
+    return;
+  }
+}
+
+function restoreCachedUploadHistory() {
+  const cached = readCachedHistory();
+  if (!cached || !Array.isArray(cached.jobs)) return false;
+  const list = document.getElementById("uploadHistoryList");
+  list.innerHTML = "";
+  if (cached.jobs.length === 0) {
+    list.innerHTML = '<div class="upload-status-text">No history</div>';
+    return true;
+  }
+  for (const job of cached.jobs) list.appendChild(renderHistoryEntry(job));
+  return true;
+}
+
+document.getElementById("searchForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await runSearch();
+});
+
+for (const id of ["creditMemoNumber", "dateFrom", "dateTo", "refType", "refValue"]) {
+  const el = document.getElementById(id);
+  el.addEventListener("input", () => savePageState());
+  el.addEventListener("change", () => savePageState());
+}
+
+document.getElementById("exportBtn").addEventListener("click", () => {
+  window.open(`/api/credit-memos/export/by-filter/pdf?${buildQuery()}`, "_blank");
+});
+
+document.getElementById("uploadForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fileInput = document.getElementById("pdfFile");
+  if (!fileInput.files.length) {
+    showUploadResult("Please choose a PDF file");
+    return;
+  }
+  document.getElementById("uploadResult").style.display = "none";
+
+  const files = Array.from(fileInput.files);
+  fileInput.value = "";
+
+  for (const file of files) {
+    const formData = new FormData();
+    formData.append("file", file);
+    let res, result;
+    try {
+      if (!pageActive) return;
+      res = await clientFetch("/api/credit-memos/upload", { method: "POST", body: formData });
+      result = await parseResponse(res);
+    } catch {
+      if (!pageActive) return;
+      const elements = createUploadJobElement(file.name, "", clientId);
+      elements.cancelBtn.style.display = "none";
+      elements.textEl.textContent = "Upload failed: connection error";
+      continue;
+    }
+    if (!res.ok) {
+      const elements = createUploadJobElement(file.name, "", clientId);
+      elements.cancelBtn.style.display = "none";
+      elements.textEl.textContent = `Upload failed: ${result.detail || "unknown"}`;
+      continue;
+    }
+    const elements = createUploadJobElement(file.name, result.job_id, clientId);
+    renderUploadStatus(elements, { status: "pending", total_pages: null, processed_pages: 0 });
+    pollUploadJobInBackground(result.job_id, elements);
+  }
+});
+
+document.getElementById("uploadHistoryAccordion").addEventListener("toggle", (e) => {
+  if (e.target.open) {
+    if (!restoreCachedUploadHistory()) loadUploadHistory();
+  }
+});
+
+document.getElementById("advancedPanel").addEventListener("toggle", () => savePageState());
+document.getElementById("uploadAccordion").addEventListener("toggle", () => savePageState());
+document.getElementById("uploadHistoryAccordion").addEventListener("toggle", () => savePageState());
+window.addEventListener("pagehide", () => savePageState());
+
+async function resumeActiveUploadJobs() {
+  if (!pageActive) return;
+  try {
+    if (!pageActive) return;
+    const res = await clientFetch("/api/credit-memos/upload/active");
+    const jobs = await parseResponse(res);
+    if (!res.ok || !Array.isArray(jobs) || jobs.length === 0) return;
+    if (!pageActive) return;
+    document.getElementById("uploadAccordion").open = true;
+    for (const job of jobs) {
+      if (!pageActive) return;
+      const existing = getUploadJobElement(job.id);
+      if (existing) {
+        renderUploadStatus(
+          {
+            fillEl: existing.querySelector(".upload-progress-fill"),
+            textEl: existing.querySelector(".upload-status-text"),
+            cancelBtn: existing.querySelector(".upload-cancel-btn"),
+          },
+          job
+        );
+        continue;
+      }
+      const elements = createUploadJobElement(job.filename, job.id, job.client_id);
+      renderUploadStatus(elements, job);
+      pollUploadJobInBackground(job.id, elements);
+    }
+  } catch {
+    return;
+  }
+}
+
+void resumeActiveUploadJobs();
+
+const cachedResults = readCachedResults();
+if (navigationType === "back_forward" && cachedResults && cachedResults.queryKey === buildQuery().toString()) {
+  renderRows(cachedResults.payload);
+}
+
+if (navigationType === "back_forward" && pageState.historyOpen) {
+  if (!restoreCachedUploadHistory()) loadUploadHistory();
+}
+</script>
+</body>
+</html>

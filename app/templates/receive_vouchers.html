@@ -1,0 +1,831 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Receive Voucher Report</title>
+  <link rel="stylesheet" href="/static/styles.css?v={{ static_version }}">
+  <script src="/static/browser_state.js?v={{ static_version }}"></script>
+  <script src="/static/ref_labels.js?v={{ static_version }}"></script>
+</head>
+<body>
+
+  <!-- Loading Overlay -->
+  <div id="loadingOverlay" class="loading-overlay">
+    <div class="loading-box">
+      <div class="spinner"></div>
+      <span id="loadingMsg">กำลังโหลด… / Loading…</span>
+    </div>
+  </div>
+
+  <main class="workbench">
+
+    <header class="page-header">
+      <div>
+        <span class="page-kicker">Receive Voucher Workspace</span>
+        <h1>Receive Voucher</h1>
+        <p class="subtle">นำเข้า ค้นหา และเรียกดู PDF / PDF import, search, and retrieval</p>
+      </div>
+      <nav>
+        <a href="/">หน้าแรก / Home</a>
+        <a href="/docs" target="_blank" rel="noreferrer">เอกสาร API / API Docs</a>
+      </nav>
+    </header>
+
+    <!-- Filter panel — one unified form -->
+    <section class="panel search-panel">
+      <div class="search-panel-heading">
+        <div>
+          <span class="panel-kicker">Primary Flow</span>
+          <h2>ค้นหา Receive Voucher</h2>
+          <p class="subtle">ใช้ Voucher Number เป็นจุดเริ่ม แล้วค่อยเปิดดู PDF หรือ chain ที่เกี่ยวข้อง</p>
+        </div>
+        <span class="panel-badge">Main entry</span>
+      </div>
+      <form id="searchForm">
+        <div class="search-row">
+          <input
+            type="text"
+            id="voucherNumber"
+            class="search-input"
+            placeholder="ค้นหา Voucher Number… เช่น QR2508-00001"
+            autocomplete="off"
+          >
+        </div>
+
+        <details class="inner-accordion" id="advancedPanel">
+          <summary>ตัวกรองเพิ่มเติม / Advanced filters</summary>
+          <div class="filters-grid">
+            <label>
+              วันที่ตั้งแต่
+              <input type="date" id="dateFrom">
+            </label>
+            <label>
+              วันที่ถึง
+              <input type="date" id="dateTo">
+            </label>
+            <label>
+              Ref Type
+              <select id="refType">
+                <option value="">-</option>
+                <option value="invoice_no">Invoice No.</option>
+                <option value="bank_code">Bank Code</option>
+                <option value="bank_account_no">Bank Account No.</option>
+                <option value="check_no">Check No.</option>
+                <option value="bill_no">Bill No.</option>
+                <option value="customer_code">Customer Code</option>
+                <option value="journal_name">Journal Name</option>
+              </select>
+            </label>
+            <label>
+              Ref Value
+              <input type="text" id="refValue" placeholder="เช่น KBANK">
+            </label>
+          </div>
+        </details>
+
+        <div class="search-actions">
+          <button type="submit" id="searchBtn">ค้นหา / Search</button>
+          <button type="button" id="exportBtn" class="secondary">Export PDF</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Upload PDF — accordion -->
+    <details id="uploadAccordion" class="panel accordion">
+      <summary>อัปโหลด PDF / Upload PDF</summary>
+      <form id="uploadForm" class="upload-form">
+        <input type="file" id="pdfFile" accept="application/pdf" multiple required>
+        <button type="submit" id="uploadBtn">Upload</button>
+      </form>
+      <div id="uploadJobsList" class="upload-jobs-list"></div>
+      <pre id="uploadResult" aria-live="polite" style="display:none"></pre>
+
+      <details id="uploadHistoryAccordion" class="inner-accordion">
+        <summary>ประวัติการอัปโหลด / Upload History</summary>
+        <div id="uploadHistoryList" class="upload-jobs-list"></div>
+      </details>
+    </details>
+
+    <!-- Results -->
+    <section class="panel results-panel">
+      <div class="results-header">
+        <h2>ผลการค้นหา / Results</h2>
+        <span id="resultCount" class="subtle"></span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Voucher Number</th>
+              <th>วันที่</th>
+              <th>ชื่อ</th>
+              <th>Refs</th>
+              <th>หน้า</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="resultsBody">
+            <tr><td colspan="6" class="empty-msg">ยังไม่ได้ค้นหา / No search yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+<script>
+
+function buildQuery() {
+  const params = new URLSearchParams();
+  const voucherNumber = document.getElementById("voucherNumber").value.trim();
+  const dateFrom = document.getElementById("dateFrom").value;
+  const dateTo = document.getElementById("dateTo").value;
+  const refType = document.getElementById("refType").value;
+  const refValue = document.getElementById("refValue").value.trim();
+  if (voucherNumber) params.set("voucher_number", voucherNumber);
+  if (dateFrom) params.set("date_from", dateFrom);
+  if (dateTo) params.set("date_to", dateTo);
+  if (refType && refValue) {
+    params.set("ref_type", refType);
+    params.set("ref_value", refValue);
+  }
+  return params;
+}
+
+async function parseResponse(res) {
+  const ct = res.headers.get("content-type") || "";
+  return ct.includes("application/json") ? res.json() : { detail: await res.text() };
+}
+
+const sessionStorage = PdfRvState.storage;
+const clientId = PdfRvState.getClientId();
+const pageStateKey = PdfRvState.key("receive-vouchers", "state");
+const uploadStateKey = PdfRvState.key("receive-vouchers", "upload-state");
+const resultsCacheKey = `${pageStateKey}:results`;
+const historyCacheKey = `${pageStateKey}:history`;
+const navigationType = performance.getEntriesByType("navigation")[0]?.type || "navigate";
+const pageStateFields = ["voucherNumber", "dateFrom", "dateTo", "refType", "refValue"];
+
+if (navigationType !== "back_forward") {
+  for (const key of [pageStateKey, uploadStateKey, resultsCacheKey, historyCacheKey]) {
+    sessionStorage.removeItem(key);
+  }
+}
+
+function readPageState() {
+  try {
+    return JSON.parse(sessionStorage.getItem(pageStateKey) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function capturePageState() {
+  const state = readPageState();
+  for (const id of pageStateFields) {
+    state[id] = document.getElementById(id).value;
+  }
+  state.advancedOpen = document.getElementById("advancedPanel").open;
+  state.uploadOpen = document.getElementById("uploadAccordion").open;
+  state.historyOpen = document.getElementById("uploadHistoryAccordion").open;
+  return state;
+}
+
+function savePageState(extra = {}) {
+  sessionStorage.setItem(pageStateKey, JSON.stringify({ ...capturePageState(), ...extra }));
+}
+
+function readUploadState() {
+  try {
+    return JSON.parse(sessionStorage.getItem(uploadStateKey) || "[]") || [];
+  } catch {
+    return [];
+  }
+}
+
+function saveUploadState(state) {
+  sessionStorage.setItem(uploadStateKey, JSON.stringify(state));
+}
+
+function readSessionJson(key) {
+  try {
+    return JSON.parse(sessionStorage.getItem(key) || "null");
+  } catch {
+    return null;
+  }
+}
+
+function saveSessionJson(key, value) {
+  sessionStorage.setItem(key, JSON.stringify(value));
+}
+
+function clientFetch(input, init = {}) {
+  const headers = new Headers(init.headers || {});
+  headers.set("X-Client-Id", clientId);
+  return fetch(input, { ...init, headers });
+}
+
+function readCachedResults() {
+  return readSessionJson(resultsCacheKey);
+}
+
+function saveCachedResults(queryKey, payload) {
+  saveSessionJson(resultsCacheKey, { queryKey, payload, savedAt: Date.now() });
+}
+
+function readCachedHistory() {
+  return readSessionJson(historyCacheKey);
+}
+
+function saveCachedHistory(jobs) {
+  saveSessionJson(historyCacheKey, { jobs, savedAt: Date.now() });
+}
+
+function restorePageState() {
+  const state = readPageState();
+  const shouldRestore = navigationType === "back_forward";
+  for (const id of pageStateFields) {
+    document.getElementById(id).value = shouldRestore && state[id] != null ? state[id] : "";
+  }
+  document.getElementById("advancedPanel").open = shouldRestore && Boolean(state.advancedOpen);
+  document.getElementById("uploadAccordion").open = shouldRestore && Boolean(state.uploadOpen);
+  document.getElementById("uploadHistoryAccordion").open = shouldRestore && Boolean(state.historyOpen);
+  return state;
+}
+
+const pageState = restorePageState();
+let pageActive = true;
+
+window.addEventListener("pagehide", () => {
+  pageActive = false;
+  savePageState();
+});
+
+window.addEventListener("pageshow", (event) => {
+  pageActive = true;
+  if (event.persisted) {
+    void resumeActiveUploadJobs();
+  }
+});
+
+PdfRvState.createUploadViewSync({
+  getPageActive: () => pageActive,
+  getHistoryOpen: () => document.getElementById("uploadHistoryAccordion").open,
+  refreshActiveUploads: () => resumeActiveUploadJobs(),
+  refreshHistory: () => loadUploadHistory(),
+});
+
+// ── Loading overlay ──
+const overlay = document.getElementById("loadingOverlay");
+const loadingMsg = document.getElementById("loadingMsg");
+
+function showLoading(msg = "กำลังโหลด… / Loading…") {
+  loadingMsg.textContent = msg;
+  overlay.classList.add("active");
+}
+
+function hideLoading() {
+  overlay.classList.remove("active");
+}
+
+function showUploadResult(value) {
+  const el = document.getElementById("uploadResult");
+  el.style.display = "block";
+  el.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+const CANCELLED_MESSAGE = "Cancelled by user";
+
+// Creates a progress entry for one upload job and returns its elements.
+function createUploadJobElement(filename, jobId, jobClientId = clientId) {
+  const wrap = document.createElement("div");
+  wrap.className = "upload-job";
+  if (jobId) wrap.dataset.jobId = jobId;
+
+  const header = document.createElement("div");
+  header.className = "upload-job-header";
+
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "upload-job-title";
+
+  const nameEl = document.createElement("div");
+  nameEl.className = "upload-job-name";
+  nameEl.textContent = filename;
+  titleWrap.appendChild(nameEl);
+
+  const originBadge = PdfRvState.createOriginBadge({ client_id: jobClientId });
+  if (originBadge) titleWrap.appendChild(originBadge);
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "upload-cancel-btn";
+  cancelBtn.textContent = "หยุด";
+  cancelBtn.addEventListener("click", async () => {
+    cancelBtn.disabled = true;
+    cancelBtn.textContent = "กำลังหยุด...";
+    try {
+      const response = await clientFetch(`/api/receive-vouchers/upload/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+      const payload = await parseResponse(response);
+      if (!response.ok) {
+        if (response.status === 404 || response.status === 409) {
+          cancelBtn.style.display = "none";
+        } else {
+          cancelBtn.disabled = false;
+          cancelBtn.textContent = "หยุด";
+        }
+        textEl.textContent = `ยกเลิกไม่สำเร็จ: ${payload.detail || "งานอัปโหลดอาจจบแล้ว"}`;
+        return;
+      }
+      textEl.textContent = "กำลังยกเลิก...";
+    } catch {
+      cancelBtn.disabled = false;
+      cancelBtn.textContent = "หยุด";
+      textEl.textContent = "ยกเลิกไม่สำเร็จ: เชื่อมต่อล้มเหลว";
+    }
+  });
+
+  header.appendChild(titleWrap);
+  header.appendChild(cancelBtn);
+
+  const track = document.createElement("div");
+  track.className = "upload-progress-track";
+  const fillEl = document.createElement("div");
+  fillEl.className = "upload-progress-fill";
+  fillEl.style.width = "0%";
+  track.appendChild(fillEl);
+
+  const textEl = document.createElement("div");
+  textEl.className = "upload-status-text";
+
+  wrap.appendChild(header);
+  wrap.appendChild(track);
+  wrap.appendChild(textEl);
+  document.getElementById("uploadJobsList").appendChild(wrap);
+
+  return { fillEl, textEl, cancelBtn };
+}
+
+function getUploadJobElement(jobId) {
+  return jobId ? document.querySelector(`.upload-job[data-job-id="${jobId}"]`) : null;
+}
+
+function renderUploadStatus(elements, job) {
+  const { fillEl, textEl, cancelBtn } = elements;
+  const label = PdfRvState.getJobLabel(job);
+  const finished = job.status === "done" || job.status === "failed";
+  const canCancel = !job.client_id || job.client_id === clientId;
+  cancelBtn.style.display = finished || !canCancel ? "none" : "";
+  fillEl.classList.toggle("error", job.status === "failed" && job.error_message !== CANCELLED_MESSAGE);
+
+  if (job.status === "done") {
+    fillEl.style.width = "100%";
+    let text = `${PdfRvState.getStatusPrefix("done")}: ${job.total_pages ?? "?"} หน้า, พบ ${job.voucher_count ?? 0} เลขที่ใบสำคัญรับ`;
+    if (job.warnings && job.warnings.length) text += ` (${job.warnings.length} warnings)`;
+    textEl.textContent = text;
+    return;
+  }
+
+  if (job.status === "pending") {
+    textEl.textContent = PdfRvState.formatLabeledStatus("preparing", label, job.total_pages ? ` (${job.processed_pages ?? 0}/${job.total_pages} หน้า)` : "");
+    return;
+  }
+
+  if (job.status === "failed") {
+    fillEl.style.width = "100%";
+    textEl.textContent = job.error_message === CANCELLED_MESSAGE
+      ? `${PdfRvState.getStatusPrefix("cancelled")} (${job.processed_pages ?? 0}/${job.total_pages ?? "?"} หน้า)`
+      : `${PdfRvState.getStatusPrefix("failed")}: ${job.error_message ?? PdfRvState.getStatusPrefix("unknown")}`;
+    return;
+  }
+
+  const total = job.total_pages;
+  const processed = job.processed_pages ?? 0;
+  if (total) {
+    const percent = Math.min(100, Math.round((processed / total) * 100));
+    fillEl.style.width = `${percent}%`;
+    textEl.textContent = PdfRvState.formatLabeledStatus("processing", label, ` — ${processed}/${total} หน้า (${percent}%)`);
+  } else {
+    fillEl.style.width = "0%";
+    textEl.textContent = PdfRvState.formatLabeledStatus("preparing", label);
+  }
+}
+
+function makeCell(value) {
+  const td = document.createElement("td");
+  td.textContent = value ?? "";
+  return td;
+}
+
+function renderMessage(msg) {
+  const body = document.getElementById("resultsBody");
+  body.innerHTML = "";
+  const tr = document.createElement("tr");
+  const td = makeCell(msg);
+  td.colSpan = 6;
+  td.className = "empty-msg";
+  tr.appendChild(td);
+  body.appendChild(tr);
+  document.getElementById("resultCount").textContent = "";
+}
+
+function appendRefPairs(container, entries) {
+  for (const [label, value] of entries) {
+    if (!value) continue;
+    const row = document.createElement("div");
+    row.className = "refs-structured-row";
+    const key = document.createElement("span");
+    key.className = "refs-structured-key";
+    key.textContent = label;
+    const val = document.createElement("span");
+    val.className = "refs-structured-value";
+    val.textContent = value;
+    row.append(key, val);
+    container.appendChild(row);
+  }
+}
+
+function uobMatchLabel(status) {
+  if (status === "unique_match") return "Matched";
+  if (status === "ambiguous_match") return "Ambiguous";
+  return "No match";
+}
+
+function appendUobMatch(container, match) {
+  const wrap = document.createElement("div");
+  wrap.className = "uob-match";
+
+  const header = document.createElement("div");
+  header.className = "uob-match-header";
+  const badge = document.createElement("span");
+  badge.className = `uob-match-badge ${match.status || "no_match"}`;
+  badge.textContent = uobMatchLabel(match.status);
+  const count = document.createElement("span");
+  count.className = "uob-match-count";
+  const candidates = Array.isArray(match.candidates) ? match.candidates : [];
+  count.textContent = `${candidates.length} UOB candidate${candidates.length === 1 ? "" : "s"}`;
+  header.append(badge, count);
+  wrap.appendChild(header);
+
+  if (candidates.length) {
+    const details = document.createElement("details");
+    details.className = "uob-candidates";
+    const summary = document.createElement("summary");
+    summary.textContent = "UOB candidates";
+    details.appendChild(summary);
+
+    for (const candidate of candidates) {
+      const item = document.createElement("div");
+      item.className = "uob-candidate";
+      appendRefPairs(item, [
+        ["Statement", candidate.statement_key],
+        ["Page", candidate.page_order],
+        ["Row", candidate.row_order],
+        ["Date", candidate.transaction_date],
+        ["Time", candidate.transaction_time],
+        ["Type", candidate.transaction_type],
+        ["Amount", candidate.amount_raw],
+        ["Transaction ID", candidate.transaction_id],
+        ["Transaction Ref", candidate.transaction_ref],
+        ["Customer Ref", candidate.customer_ref],
+        ["Customer Code", candidate.customer_code],
+      ]);
+      const source = document.createElement("pre");
+      source.className = "uob-source-line";
+      source.textContent = candidate.source_line || "";
+      item.appendChild(source);
+      details.appendChild(item);
+    }
+    wrap.appendChild(details);
+  }
+
+  container.appendChild(wrap);
+}
+
+function makeStructuredRefsCell(refs, bankRows = []) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "refs-structured";
+
+  const general = document.createElement("div");
+  general.className = "refs-section";
+  const generalTitle = document.createElement("div");
+  generalTitle.className = "refs-section-title";
+  generalTitle.textContent = "General";
+  general.appendChild(generalTitle);
+
+  const bankScopedKeys = new Set(["bank_code", "bank_account_no", "check_no", "bill_no"]);
+  const generalEntries = [];
+  for (const [key, value] of Object.entries(refs || {})) {
+    if (!value || (bankRows.length && bankScopedKeys.has(key))) continue;
+    generalEntries.push([refLabels[key] || key, value]);
+  }
+  if (generalEntries.length) {
+    appendRefPairs(general, generalEntries);
+  } else {
+    const empty = document.createElement("div");
+    empty.className = "refs-section-empty";
+    empty.textContent = "ไม่มีข้อมูลทั่วไป";
+    general.appendChild(empty);
+  }
+  wrapper.appendChild(general);
+
+  if (Array.isArray(bankRows) && bankRows.length) {
+    const bankSection = document.createElement("div");
+    bankSection.className = "refs-section";
+    const bankTitle = document.createElement("div");
+    bankTitle.className = "refs-section-title";
+    bankTitle.textContent = "Bank Rows";
+    bankSection.appendChild(bankTitle);
+
+    for (const [index, row] of bankRows.entries()) {
+      const card = document.createElement("div");
+      card.className = "bank-row-card";
+      const cardTitle = document.createElement("div");
+      cardTitle.className = "bank-row-title";
+      cardTitle.textContent = `Row ${index + 1}`;
+      card.appendChild(cardTitle);
+      appendRefPairs(card, [
+        ["Bank", row.bank_code],
+        ["Bank Account No.", row.bank_account_no],
+        ["Check No.", row.check_no],
+        ["Bill No.", row.bill_no],
+        ["Currency Amt.", row.currency_amt_raw],
+      ]);
+      if (row.uob_match) appendUobMatch(card, row.uob_match);
+      bankSection.appendChild(card);
+    }
+    wrapper.appendChild(bankSection);
+  }
+
+  return wrapper;
+}
+
+function renderRows(rows) {
+  const body = document.getElementById("resultsBody");
+  body.innerHTML = "";
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    renderMessage("ไม่พบข้อมูล");
+    return;
+  }
+
+  document.getElementById("resultCount").textContent = `${rows.length} รายการ`;
+
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    tr.className = "result-row";
+
+    tr.appendChild(makeCell(row.voucher_number));
+    tr.appendChild(makeCell(row.voucher_date));
+    tr.appendChild(makeCell(row.name));
+    const refsCell = document.createElement("td");
+    refsCell.className = "refs-cell";
+    refsCell.appendChild(makeStructuredRefsCell(row.refs || {}, row.bank_rows || []));
+    tr.appendChild(refsCell);
+    tr.appendChild(makeCell(row.assembled_page_count));
+
+    const pdfUrl = `/api/receive-vouchers/${encodeURIComponent(row.voucher_number)}.pdf`;
+    const actionCell = document.createElement("td");
+    actionCell.appendChild(PdfRvState.createPdfLink(pdfUrl));
+    tr.appendChild(actionCell);
+    tr.classList.add("pdf-link-row");
+    body.appendChild(tr);
+  }
+}
+
+async function runSearch() {
+  if (!pageActive) return;
+  showLoading("กำลังค้นหา… / Searching…");
+  try {
+    const params = buildQuery();
+    const queryKey = params.toString();
+    const res = await fetch(`/api/receive-vouchers?${params}`);
+    const payload = await parseResponse(res);
+    if (!res.ok) { renderMessage(payload.detail || "ค้นหาไม่สำเร็จ"); return; }
+    renderRows(payload);
+    saveCachedResults(queryKey, payload);
+  } finally {
+    hideLoading();
+    savePageState({ searchSubmitted: true });
+  }
+}
+
+document.getElementById("searchForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await runSearch();
+});
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Polls one job's status in the background without blocking the UI.
+// The user can keep searching/viewing existing data, and uploading more
+// files, while this runs. Each job updates only its own progress entry.
+async function pollUploadJobInBackground(jobId, elements) {
+  while (true) {
+    if (!pageActive) return;
+    let res, job;
+    try {
+      res = await clientFetch(`/api/receive-vouchers/upload/${encodeURIComponent(jobId)}`);
+      job = await parseResponse(res);
+    } catch {
+      if (!pageActive) return;
+      await sleep(1000);
+      continue;
+    }
+    if (res.status === 404) {
+      elements.textEl.textContent = "ไม่พบสถานะงานนี้";
+      return;
+    }
+    if (!res.ok) {
+      // Transient server error (e.g. a momentary DB lock) — keep polling
+      // instead of leaving the progress bar stuck.
+      await sleep(1000);
+      continue;
+    }
+    renderUploadStatus(elements, job);
+    if (job.status === "done" || job.status === "failed") {
+      if (job.status === "done") await runSearch();
+      const historyAccordion = document.getElementById("uploadHistoryAccordion");
+      if (historyAccordion.open) loadUploadHistory();
+      return;
+    }
+    await sleep(1000);
+  }
+}
+
+document.getElementById("uploadForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fileInput = document.getElementById("pdfFile");
+  if (!fileInput.files.length) { showUploadResult("กรุณาเลือกไฟล์ PDF"); return; }
+  document.getElementById("uploadResult").style.display = "none";
+
+  const files = Array.from(fileInput.files);
+  fileInput.value = "";
+
+  for (const file of files) {
+    const formData = new FormData();
+    formData.append("file", file);
+    let res, result;
+    try {
+      res = await clientFetch("/api/receive-vouchers/upload", { method: "POST", body: formData });
+      result = await parseResponse(res);
+    } catch {
+      if (!pageActive) return;
+      const elements = createUploadJobElement(file.name, "", clientId);
+      elements.cancelBtn.style.display = "none";
+      elements.textEl.textContent = "อัปโหลดไม่สำเร็จ: เชื่อมต่อล้มเหลว";
+      continue;
+    }
+    if (!res.ok) {
+      const elements = createUploadJobElement(file.name, "", clientId);
+      elements.cancelBtn.style.display = "none";
+      elements.textEl.textContent = `อัปโหลดไม่สำเร็จ: ${result.detail || "ไม่ทราบสาเหตุ"}`;
+      continue;
+    }
+    const elements = createUploadJobElement(file.name, result.job_id, clientId);
+    renderUploadStatus(elements, { status: "pending", total_pages: null, processed_pages: 0 });
+    pollUploadJobInBackground(result.job_id, elements);
+  }
+});
+
+document.getElementById("exportBtn").addEventListener("click", () => {
+  window.open(`/api/receive-vouchers/export/by-filter/pdf?${buildQuery()}`, "_blank");
+});
+
+for (const id of pageStateFields) {
+  const input = document.getElementById(id);
+  input.addEventListener("input", () => savePageState());
+  input.addEventListener("change", () => savePageState());
+}
+
+document.getElementById("advancedPanel").addEventListener("toggle", () => savePageState());
+document.getElementById("uploadAccordion").addEventListener("toggle", () => savePageState());
+document.getElementById("uploadHistoryAccordion").addEventListener("toggle", () => savePageState());
+window.addEventListener("pagehide", () => savePageState());
+
+// ── Upload history (collapsed by default) ──
+function renderHistoryEntry(job) {
+  const wrap = document.createElement("div");
+  wrap.className = "upload-job";
+
+  const header = document.createElement("div");
+  header.className = "upload-job-header";
+
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "upload-job-title";
+
+  const nameEl = document.createElement("div");
+  nameEl.className = "upload-job-name";
+  nameEl.textContent = job.filename;
+  titleWrap.appendChild(nameEl);
+
+  const originBadge = PdfRvState.createOriginBadge(job);
+  if (originBadge) titleWrap.appendChild(originBadge);
+
+  const timeEl = document.createElement("div");
+  timeEl.className = "upload-history-time";
+  timeEl.textContent = new Date(job.created_at).toLocaleString("th-TH");
+
+  header.appendChild(titleWrap);
+  header.appendChild(timeEl);
+
+  const textEl = document.createElement("div");
+  textEl.className = "upload-status-text";
+  if (job.status === "done") {
+    let text = `สำเร็จ / Done: ${job.total_pages ?? "?"} หน้า, พบ ${job.voucher_count ?? 0} เลขที่ใบสำคัญรับ`;
+    if (job.warnings && job.warnings.length) text += ` (${job.warnings.length} warnings)`;
+    textEl.textContent = text;
+  } else if (job.error_message === CANCELLED_MESSAGE) {
+    textEl.textContent = `${PdfRvState.getStatusPrefix("cancelled")} (${job.processed_pages ?? 0}/${job.total_pages ?? "?"} หน้า)`;
+  } else {
+    textEl.textContent = `${PdfRvState.getStatusPrefix("failed")}: ${job.error_message ?? PdfRvState.getStatusPrefix("unknown")}`;
+    textEl.classList.add("upload-status-error");
+  }
+
+  wrap.appendChild(header);
+  wrap.appendChild(textEl);
+  return wrap;
+}
+
+async function loadUploadHistory() {
+  if (!pageActive) return;
+  const list = document.getElementById("uploadHistoryList");
+  list.innerHTML = "";
+  try {
+    const res = await clientFetch("/api/receive-vouchers/upload/history");
+    const jobs = await parseResponse(res);
+    if (!res.ok || !Array.isArray(jobs)) return;
+    saveCachedHistory(jobs);
+    if (jobs.length === 0) {
+      list.innerHTML = '<div class="upload-status-text">ยังไม่มีประวัติ</div>';
+      return;
+    }
+    for (const job of jobs) list.appendChild(renderHistoryEntry(job));
+  } catch {
+    // Ignore — history just won't load this time.
+  }
+}
+
+function restoreCachedUploadHistory() {
+  const cached = readCachedHistory();
+  if (!cached || !Array.isArray(cached.jobs)) return false;
+  const list = document.getElementById("uploadHistoryList");
+  list.innerHTML = "";
+  if (cached.jobs.length === 0) {
+    list.innerHTML = '<div class="upload-status-text">ยังไม่มีประวัติ</div>';
+    return true;
+  }
+  for (const job of cached.jobs) list.appendChild(renderHistoryEntry(job));
+  return true;
+}
+
+document.getElementById("uploadHistoryAccordion").addEventListener("toggle", (e) => {
+  if (e.target.open) {
+    if (!restoreCachedUploadHistory()) loadUploadHistory();
+  }
+});
+
+// On page load, resume showing/polling any upload jobs still running in the
+// background for this browser profile.
+async function resumeActiveUploadJobs() {
+  try {
+    if (!pageActive) return;
+    const res = await clientFetch("/api/receive-vouchers/upload/active");
+    const jobs = await parseResponse(res);
+    if (!res.ok || !Array.isArray(jobs) || jobs.length === 0) return;
+    document.getElementById("uploadAccordion").open = true;
+    for (const job of jobs) {
+      const existing = getUploadJobElement(job.id);
+      if (existing) {
+        renderUploadStatus(
+          {
+            fillEl: existing.querySelector(".upload-progress-fill"),
+            textEl: existing.querySelector(".upload-status-text"),
+            cancelBtn: existing.querySelector(".upload-cancel-btn"),
+          },
+          job
+        );
+        continue;
+      }
+      const elements = createUploadJobElement(job.filename, job.id, job.client_id);
+      renderUploadStatus(elements, job);
+      pollUploadJobInBackground(job.id, elements);
+    }
+  } catch {
+    // Ignore — upload status will simply not be restored on this load.
+  }
+}
+
+const cachedResults = readCachedResults();
+if (navigationType === "back_forward" && cachedResults && cachedResults.queryKey === buildQuery().toString()) {
+  renderRows(cachedResults.payload);
+}
+
+if (navigationType === "back_forward" && pageState.historyOpen) {
+  if (!restoreCachedUploadHistory()) loadUploadHistory();
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+const refLabels = {
+  invoice_no: "Invoice No.",
+  bank_code: "Bank Code",
+  bank_account_no: "Bank Account No.",
+  check_no: "Check No.",
+  bill_no: "Bill No.",
+  customer_code: "Customer Code",
+  journal_name: "Journal Name",
+  sales_order_no: "Sales Order No.",
+  ext_doc_no: "Ext. Doc. No.",
+  account_number: "Account Number",
+  account_name: "Account Name",
+  branch_name: "Branch",
+  statement_date: "Statement Date",
+  statement_reference: "Statement Reference",
+  transaction_ref: "Transaction Ref",
+  company_id: "Company ID",
+  transaction_id: "Transaction ID",
+  customer_ref: "Customer Ref",
+  transaction_type: "Transaction Type"
+};
