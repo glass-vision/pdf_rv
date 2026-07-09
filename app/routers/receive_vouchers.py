@@ -16,7 +16,12 @@ from app.database import db_session
 from app.services.document_core import fetch_document_pdf, fetch_document_refs, search_document_roots
 from app.services.browser_identity import normalize_client_id
 from app.services.pdf_assembler import assemble_pdf
-from app.services.reconciliation import find_rv_uob_candidates
+from app.services.reconciliation import (
+    fetch_kbank_deposit_rows,
+    fetch_uob_transactions,
+    find_rv_kbank_candidates,
+    find_rv_uob_candidates,
+)
 from app.services.receive_voucher_extractor import normalize_ref
 from app.services.receive_voucher_extractor import extract_bank_rows
 from app.services.receive_voucher_importer import import_receive_voucher_pdf
@@ -249,6 +254,16 @@ def search_receive_vouchers(
             ref_type=ref_type,
             ref_value=normalized_ref_value,
         )]
+        # Fetch once and reuse across every row below. Otherwise the UOB/KBank
+        # candidate lookups rescan their statement-row tables per voucher.
+        uob_transactions = fetch_uob_transactions(conn)
+        kbank_deposit_rows_by_check = {}
+        kbank_deposit_rows_by_amount = {}
+        for kbank_row in fetch_kbank_deposit_rows(conn):
+            kbank_deposit_rows_by_check.setdefault(str(kbank_row["normalized_check_no"]), []).append(kbank_row)
+            amount_key = str(kbank_row.get("amount") or "")
+            if amount_key:
+                kbank_deposit_rows_by_amount.setdefault(amount_key, []).append(kbank_row)
         for row in rows:
             row["voucher_number"] = row.pop("root_key")
             iso = row.get("root_date")
@@ -297,12 +312,25 @@ def search_receive_vouchers(
                     bank_rows = extracted_bank_rows
             matches_by_row_order = {
                 item["rv_bank_row"].get("row_order"): item
-                for item in find_rv_uob_candidates(conn, voucher_number=row["voucher_number"])
+                for item in find_rv_uob_candidates(
+                    conn, voucher_number=row["voucher_number"], uob_transactions=uob_transactions
+                )
+            }
+            kbank_matches_by_row_order = {
+                item["rv_bank_row"].get("row_order"): item
+                for item in find_rv_kbank_candidates(
+                    conn,
+                    voucher_number=row["voucher_number"],
+                    kbank_deposit_rows_by_check=kbank_deposit_rows_by_check,
+                    kbank_deposit_rows_by_amount=kbank_deposit_rows_by_amount,
+                )
             }
             for bank_row in bank_rows:
                 row_order = bank_row.get("row_order")
                 if row_order in matches_by_row_order:
                     bank_row["uob_match"] = matches_by_row_order[row_order]
+                if row_order in kbank_matches_by_row_order:
+                    bank_row["kbank_match"] = kbank_matches_by_row_order[row_order]
             row["bank_rows"] = bank_rows
 
     return rows

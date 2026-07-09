@@ -81,7 +81,7 @@
               Mapping Status
               <select id="mapStatus">
                 <option value="">ทั้งหมด / All</option>
-                <option value="complete">ครบถึงธนาคาร / Complete</option>
+                <option value="complete">ครบทั้งชุด / Complete</option>
                 <option value="incomplete">ยังไม่ครบ / Incomplete</option>
               </select>
             </label>
@@ -99,18 +99,8 @@
       <section class="landing-results" aria-label="ผลลัพธ์และเอกสารที่เชื่อมโยง">
         <div class="landing-section-label">
           <span>ผลลัพธ์ / Search workspace</span>
-          <span class="subtle">Mapping, Tree View และ JSON</span>
+          <span class="subtle">Tree View และ JSON</span>
         </div>
-
-    <details class="panel accordion chain-map-panel" id="chainMapAccordion">
-      <summary>
-        <h2>มุมมองการเชื่อมโยง / Mapping View</h2>
-        <span id="chainMapCount" class="subtle summary-status"></span>
-      </summary>
-      <div id="chainMap" class="chain-map" aria-live="polite">
-        <div class="chain-empty">ยังไม่ได้ค้นหา</div>
-      </div>
-    </details>
 
     <details class="panel accordion chain-tree-panel" id="chainTreeAccordion">
       <summary>
@@ -231,6 +221,7 @@ const landingStateKey = PdfRvState.key("landing", "state");
 const navigationType = performance.getEntriesByType("navigation")[0]?.type || "navigate";
 const landingStateFields = ["voucherNumber", "dateFrom", "dateTo", "refType", "refValue", "mapStatus"];
 const chainApiBase = "/api/workspace/chain";
+const reconciliationApiBase = "/api/reconciliation";
 
 function readLandingState() {
   try {
@@ -246,7 +237,6 @@ function captureLandingState() {
     state[id] = document.getElementById(id).value;
   }
   state.advancedOpen = document.getElementById("advancedPanel").open;
-  state.chainMapOpen = document.getElementById("chainMapAccordion").open;
   state.chainTreeOpen = document.getElementById("chainTreeAccordion").open;
   state.chainJsonOpen = document.getElementById("chainJsonAccordion").open;
   state.uploadOpen = document.getElementById("universalUploadAccordion").open;
@@ -256,7 +246,14 @@ function captureLandingState() {
 }
 
 function saveLandingState(extra = {}) {
-  sessionStorage.setItem(landingStateKey, JSON.stringify({ ...captureLandingState(), ...extra }));
+  sessionStorage.setItem(
+    landingStateKey,
+    JSON.stringify({
+      ...captureLandingState(),
+      cachedChainJson: latestChainJsonPayload || null,
+      ...extra,
+    })
+  );
 }
 
 function clientFetch(input, init = {}) {
@@ -272,7 +269,6 @@ function restoreLandingState() {
     document.getElementById(id).value = shouldRestore && state[id] != null ? state[id] : "";
   }
   document.getElementById("advancedPanel").open = shouldRestore && Boolean(state.advancedOpen);
-  document.getElementById("chainMapAccordion").open = shouldRestore && Boolean(state.chainMapOpen);
   document.getElementById("chainTreeAccordion").open = shouldRestore && Boolean(state.chainTreeOpen);
   document.getElementById("chainJsonAccordion").open = shouldRestore && Boolean(state.chainJsonOpen);
   document.getElementById("universalUploadAccordion").open = shouldRestore && Boolean(state.uploadOpen);
@@ -284,6 +280,9 @@ function restoreLandingState() {
 const landingState = restoreLandingState();
 let pageActive = true;
 let latestChainPayload = Array.isArray(landingState.cachedChain) ? landingState.cachedChain : [];
+let latestChainJsonPayload = landingState.cachedChainJson && typeof landingState.cachedChainJson === "object"
+  ? landingState.cachedChainJson
+  : groupChainsForJson(latestChainPayload);
 
 window.addEventListener("pagehide", () => {
   pageActive = false;
@@ -306,14 +305,66 @@ function hideLoading() {
   overlay.classList.remove("active");
 }
 
-function makePdfLink(url, label, className = "") {
+function makePdfLink(url, label, className = "", options = {}) {
+  const page = Number(options.page || 1);
+  const params = new URLSearchParams({
+    page: String(Number.isFinite(page) && page > 0 ? page : 1),
+    zoom: "100",
+  });
+
   const link = document.createElement("a");
-  link.href = `${url}#page=1&zoom=100`;
+  link.href = `${url}#${params.toString()}`;
   link.target = "_blank";
   link.rel = "noopener";
   link.className = `pdf-action-link ${className}`.trim();
   link.textContent = label;
   return link;
+}
+
+function withQueryParam(url, key, value) {
+  if (!value) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
+}
+
+function uobHighlightedPageUrl(candidate) {
+  let url = withQueryParam(candidate?.page_pdf_url || "", "highlight_row", candidate?.row_order);
+  const highlightTerms = [
+    candidate?.customer_ref,
+    candidate?.transaction_ref,
+    candidate?.transaction_id,
+    candidate?.amount_raw,
+    candidate?.amount,
+  ].filter((value) => String(value || "").trim());
+  for (const term of highlightTerms) {
+    url = withQueryParam(url, "highlight_text", term);
+  }
+  return url;
+}
+
+function kbankCandidateHighlightedPageUrl(candidate) {
+  let url = withQueryParam(candidate?.page_pdf_url || "", "highlight_row", candidate?.row_order);
+  const highlightTerms = Array.isArray(candidate?.highlight_terms) ? candidate.highlight_terms : [];
+  for (const term of highlightTerms.filter((value) => String(value || "").trim())) {
+    url = withQueryParam(url, "highlight_text", term);
+  }
+  return url;
+}
+
+function highlightedStatementPageUrl(page) {
+  let url = withQueryParam(page?.pdf_url || "", "highlight_row", page?.row_order);
+  const highlightTerms = Array.isArray(page?.highlight_terms)
+    ? page.highlight_terms
+    : [
+        page?.normalized_check_no,
+        page?.matched_check_no,
+        page?.amount_raw,
+        page?.amount,
+      ];
+  for (const term of highlightTerms.filter((value) => String(value || "").trim())) {
+    url = withQueryParam(url, "highlight_text", term);
+  }
+  return url;
 }
 
 function buildQuery() {
@@ -520,7 +571,11 @@ function formatChainDate(value) {
 }
 
 function makeTreePdfButton(node, merged = false) {
-  const url = merged && node.chain_pdf_url ? node.chain_pdf_url : node.pdf_url;
+  const url = merged && node.chain_pdf_url
+    ? node.chain_pdf_url
+    : node?.doc_type === "kbank-page"
+      ? highlightedStatementPageUrl(node)
+      : node.pdf_url;
   if (!url) return null;
   const pageCount = merged ? node.chain_page_count : node.assembled_page_count;
   const label = merged
@@ -644,7 +699,217 @@ function makeStructuredRefsCell(refs, bankRows = []) {
   return wrapper;
 }
 
-function makeBankBranchNode(bankCodes, bankAccountNos, checkNos, billNos, kbankPages = [], uobCandidateGroups = []) {
+async function confirmUobCandidate(bankRowId, candidate) {
+  showLoading("กำลังยืนยัน UOB…");
+  try {
+    const res = await clientFetch(`${reconciliationApiBase}/rv-uob/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bank_row_id: bankRowId,
+          statement_key: candidate.statement_key,
+          page_order: candidate.page_order,
+          row_order: candidate.row_order,
+          match_rule: candidate.match_rule || null,
+          match_conditions: Array.isArray(candidate.match_conditions) ? candidate.match_conditions : null,
+          selection_source: "manual",
+        }),
+      });
+    const payload = await parseResponse(res);
+    if (!res.ok) throw new Error(payload.detail || "ยืนยัน UOB ไม่สำเร็จ");
+    await runSearch();
+  } catch (err) {
+    setSummaryStatus("chainTreeCount", err.message || "ยืนยัน UOB ไม่สำเร็จ", "empty");
+  } finally {
+    hideLoading();
+  }
+}
+
+async function unconfirmUobCandidate(bankRowId) {
+  showLoading("กำลังยกเลิกยืนยัน UOB…");
+  try {
+    const res = await clientFetch(`${reconciliationApiBase}/rv-uob/confirm/${encodeURIComponent(bankRowId)}`, {
+      method: "DELETE",
+    });
+    const payload = await parseResponse(res);
+    if (!res.ok) throw new Error(payload.detail || "ยกเลิกยืนยัน UOB ไม่สำเร็จ");
+    await runSearch();
+  } catch (err) {
+    setSummaryStatus("chainTreeCount", err.message || "ยกเลิกยืนยัน UOB ไม่สำเร็จ", "empty");
+  } finally {
+    hideLoading();
+  }
+}
+
+async function confirmUniqueUobCandidates(voucherNumber) {
+  if (!voucherNumber) return;
+  showLoading("กำลังยืนยัน UOB match เดียวทั้งหมด…");
+  try {
+    await confirmUniqueUobVoucher(voucherNumber);
+    await runSearch();
+  } catch (err) {
+    setSummaryStatus("chainTreeCount", err.message || "ยืนยัน UOB ไม่สำเร็จ", "empty");
+  } finally {
+    hideLoading();
+  }
+}
+
+async function confirmUniqueUobVoucher(voucherNumber) {
+  const query = new URLSearchParams({ voucher_number: voucherNumber });
+  const res = await clientFetch(`${reconciliationApiBase}/rv-uob/confirm-unique?${query}`, { method: "POST" });
+  const payload = await parseResponse(res);
+  if (!res.ok) throw new Error(payload.detail || "ยืนยัน UOB ไม่สำเร็จ");
+  return payload;
+}
+
+async function confirmKbankCandidate(bankRowId, candidate) {
+  showLoading("กำลังยืนยัน KBank…");
+  try {
+    const res = await clientFetch(`${reconciliationApiBase}/rv-kbank/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bank_row_id: bankRowId,
+          statement_key: candidate.statement_key,
+          page_order: candidate.page_order,
+          row_order: candidate.row_order,
+          match_rule: candidate.match_rule || null,
+          match_conditions: Array.isArray(candidate.match_conditions) ? candidate.match_conditions : null,
+          selection_source: "manual",
+        }),
+      });
+    const payload = await parseResponse(res);
+    if (!res.ok) throw new Error(payload.detail || "ยืนยัน KBank ไม่สำเร็จ");
+    await runSearch();
+  } catch (err) {
+    setSummaryStatus("chainTreeCount", err.message || "ยืนยัน KBank ไม่สำเร็จ", "empty");
+  } finally {
+    hideLoading();
+  }
+}
+
+async function unconfirmKbankCandidate(bankRowId) {
+  showLoading("กำลังยกเลิกยืนยัน KBank…");
+  try {
+    const res = await clientFetch(`${reconciliationApiBase}/rv-kbank/confirm/${encodeURIComponent(bankRowId)}`, {
+      method: "DELETE",
+    });
+    const payload = await parseResponse(res);
+    if (!res.ok) throw new Error(payload.detail || "ยกเลิกยืนยัน KBank ไม่สำเร็จ");
+    await runSearch();
+  } catch (err) {
+    setSummaryStatus("chainTreeCount", err.message || "ยกเลิกยืนยัน KBank ไม่สำเร็จ", "empty");
+  } finally {
+    hideLoading();
+  }
+}
+
+async function confirmUniqueKbankCandidates(voucherNumber) {
+  if (!voucherNumber) return;
+  showLoading("กำลังยืนยัน KBank match เดียวทั้งหมด…");
+  try {
+    const query = new URLSearchParams({ voucher_number: voucherNumber });
+    const res = await clientFetch(`${reconciliationApiBase}/rv-kbank/confirm-unique?${query}`, { method: "POST" });
+    const payload = await parseResponse(res);
+    if (!res.ok) throw new Error(payload.detail || "ยืนยัน KBank ไม่สำเร็จ");
+    await runSearch();
+  } catch (err) {
+    setSummaryStatus("chainTreeCount", err.message || "ยืนยัน KBank ไม่สำเร็จ", "empty");
+  } finally {
+    hideLoading();
+  }
+}
+
+function candidateGroupLabel(bankLabel, group) {
+  const provenance = group?.match_rule ? ` • ${group.match_rule}` : "";
+  const source = group?.selection_source ? ` • ${group.selection_source}` : "";
+  return group.status === "confirmed"
+    ? `ยืนยัน ${bankLabel} แล้ว${provenance}${source}`
+    : group.status === "ambiguous_match"
+      ? `เลือก ${bankLabel}${provenance}`
+      : `${bankLabel} match เดียว${provenance}`;
+}
+
+function candidateProvenanceLabel(candidate) {
+  const parts = [];
+  if (candidate?.match_rule) parts.push(`rule: ${candidate.match_rule}`);
+  if (Array.isArray(candidate?.match_conditions) && candidate.match_conditions.length) {
+    parts.push(candidate.match_conditions.join(" + "));
+  }
+  if (candidate?.selection_source) parts.push(candidate.selection_source);
+  return parts.length ? ` • ${parts.join(" • ")}` : "";
+}
+
+function appendBankCandidateGroups(wrap, candidateGroups, voucherNumber, config) {
+  const visibleGroups = candidateGroups.filter((group) => {
+    const candidates = Array.isArray(group?.candidates) ? group.candidates : [];
+    return candidates.length > 1;
+  });
+  const uniqueGroups = visibleGroups.filter((group) => group?.status === "unique_match");
+  if (uniqueGroups.length > 1) {
+    const confirmAll = document.createElement("button");
+    confirmAll.type = "button";
+    confirmAll.className = "secondary-btn chain-tree-view-btn";
+    confirmAll.textContent = `ยืนยัน ${config.bankLabel} match เดียวทั้งหมด (${uniqueGroups.length})`;
+    confirmAll.addEventListener("click", () => config.confirmUnique(voucherNumber));
+    wrap.appendChild(confirmAll);
+  }
+  for (const group of visibleGroups) {
+    const candidates = Array.isArray(group?.candidates) ? group.candidates : [];
+    if (!candidates.length) continue;
+    const details = document.createElement("details");
+    details.className = "chain-uob-candidates";
+    const summary = document.createElement("summary");
+    const amount = group?.rv_bank_row?.amount_raw || group?.rv_bank_row?.amount || "";
+    summary.textContent = `${candidateGroupLabel(config.bankLabel, group)}${amount ? ` • ${amount}` : ""}${candidates.length > 1 ? ` (${candidates.length})` : ""}`;
+    details.appendChild(summary);
+    for (const candidate of candidates) {
+      const item = document.createElement("div");
+      item.className = `chain-uob-candidate${candidate.confirmed ? " is-confirmed" : ""}`;
+      const text = document.createElement("div");
+      text.className = "chain-tree-node-meta";
+      text.textContent = `${config.candidateLabel(candidate)}${candidateProvenanceLabel(candidate)}`;
+      item.appendChild(text);
+      const actions = document.createElement("div");
+      actions.className = "chain-tree-actions";
+      if (candidate.page_pdf_url) {
+        actions.appendChild(makePdfLink(
+          config.highlightedUrl(candidate),
+          `เปิดหน้า ${config.bankLabel}`,
+          "secondary-btn chain-tree-view-btn"
+        ));
+      }
+      if (candidate.pdf_url) {
+        actions.appendChild(makePdfLink(
+          candidate.pdf_url,
+          "เปิด Statement",
+          "secondary-btn chain-tree-view-btn",
+          { page: candidate.page_order }
+        ));
+      }
+      if (candidate.confirmed && group?.rv_bank_row?.id) {
+        const unconfirmBtn = document.createElement("button");
+        unconfirmBtn.type = "button";
+        unconfirmBtn.className = "secondary-btn chain-tree-view-btn";
+        unconfirmBtn.textContent = "ยกเลิกยืนยัน";
+        unconfirmBtn.addEventListener("click", () => config.unconfirm(group.rv_bank_row.id));
+        actions.appendChild(unconfirmBtn);
+      } else if (group?.rv_bank_row?.id) {
+        const confirmBtn = document.createElement("button");
+        confirmBtn.type = "button";
+        confirmBtn.className = "secondary-btn chain-tree-view-btn";
+        confirmBtn.textContent = `ยืนยัน ${config.bankLabel} นี้`;
+        confirmBtn.addEventListener("click", () => config.confirm(group.rv_bank_row.id, candidate));
+        actions.appendChild(confirmBtn);
+      }
+      item.appendChild(actions);
+      details.appendChild(item);
+    }
+    wrap.appendChild(details);
+  }
+}
+
+function makeBankBranchNode(bankCodes, bankAccountNos, checkNos, billNos, kbankCandidateGroups = [], uobCandidateGroups = [], voucherNumber = "") {
   const row = document.createElement("div");
   row.className = "chain-tree-node chain-tree-node-bank";
 
@@ -671,77 +936,109 @@ function makeBankBranchNode(bankCodes, bankAccountNos, checkNos, billNos, kbankP
     checkNos.length ? `Check No.: ${checkNos.join(", ")}` : "",
     billNos.length ? `Bill No.: ${billNos.join(", ")}` : "",
   ];
-  if (kbankPages.length) {
-    const pageLabels = kbankPages
-      .map((page) => {
-        const pageKey = page.page_key || page.key || "";
-        const matchedCheck = page.matched_check_no || "";
-        return matchedCheck ? `${pageKey} (${matchedCheck})` : pageKey;
-      })
-      .filter(Boolean);
-    if (pageLabels.length) metaParts.push(`Matched Page: ${pageLabels.join(", ")}`);
+  const kbankVisibleGroups = kbankCandidateGroups.filter((group) => {
+    return Array.isArray(group?.candidates) && group.candidates.length > 1;
+  });
+  const kbankCandidateCount = kbankVisibleGroups.reduce((sum, group) => {
+    return sum + (Array.isArray(group?.candidates) ? group.candidates.length : 0);
+  }, 0);
+  if (kbankCandidateCount) {
+    metaParts.push(`KBank candidates: ${kbankCandidateCount}`);
   }
-  const uobCandidateCount = uobCandidateGroups.reduce((sum, group) => {
+  const kbankConfirmedCount = kbankVisibleGroups.filter((group) => group?.status === "confirmed").length;
+  if (kbankConfirmedCount) {
+    metaParts.push(`KBank confirmed: ${kbankConfirmedCount}`);
+  }
+  const uobVisibleGroups = uobCandidateGroups.filter((group) => {
+    return Array.isArray(group?.candidates) && group.candidates.length > 1;
+  });
+  const uobCandidateCount = uobVisibleGroups.reduce((sum, group) => {
     return sum + (Array.isArray(group?.candidates) ? group.candidates.length : 0);
   }, 0);
   if (uobCandidateCount) {
     metaParts.push(`UOB candidates: ${uobCandidateCount}`);
   }
+  const uobConfirmedCount = uobVisibleGroups.filter((group) => group?.status === "confirmed").length;
+  if (uobConfirmedCount) {
+    metaParts.push(`UOB confirmed: ${uobConfirmedCount}`);
+  }
   meta.textContent = makeChainMeta(metaParts);
   content.append(heading, meta);
 
+  // The primary right-side "Open PDF" action only appears once a match is
+  // confirmed - ambiguous check_no/account+amount matches stay in the
+  // candidate list below until a human (or the single-candidate
+  // auto-confirm) resolves them. This applies the same rule to both banks.
   let bankAction = null;
-  if (kbankPages.length === 1) {
-    bankAction = makeTreePdfButton(kbankPages[0]);
-  } else if (kbankPages.length > 1) {
+  const confirmedBankPages = [];
+  const seenConfirmedBankPages = new Set();
+  for (const group of [...kbankCandidateGroups, ...uobCandidateGroups]) {
+    for (const candidate of Array.isArray(group?.candidates) ? group.candidates : []) {
+      if (!candidate.confirmed || !candidate.page_pdf_url) continue;
+      const pageKey = candidate.page_key || candidate.key || candidate.page_pdf_url;
+      if (seenConfirmedBankPages.has(pageKey)) continue;
+      seenConfirmedBankPages.add(pageKey);
+      confirmedBankPages.push(candidate);
+    }
+  }
+  const highlightedUrlForCandidate = (candidate) =>
+    candidate.doc_type === "kbank-page" ? kbankCandidateHighlightedPageUrl(candidate) : uobHighlightedPageUrl(candidate);
+  if (confirmedBankPages.length === 1) {
+    const candidate = confirmedBankPages[0];
+    bankAction = makePdfLink(
+      highlightedUrlForCandidate(candidate),
+      "เปิด PDF เอกสารนี้ • 1 หน้า",
+      "secondary-btn chain-tree-view-btn"
+    );
+  } else if (confirmedBankPages.length > 1) {
     const actions = document.createElement("div");
     actions.className = "chain-tree-actions";
-    for (const page of kbankPages) {
-      const action = makeTreePdfButton(page);
-      if (action) actions.appendChild(action);
-    }
-    if (actions.children.length) bankAction = actions;
+    confirmedBankPages.forEach((candidate, index) => {
+      actions.appendChild(makePdfLink(
+        highlightedUrlForCandidate(candidate),
+        `เปิด PDF เอกสารนี้ • หน้า ${index + 1}`,
+        "secondary-btn chain-tree-view-btn"
+      ));
+    });
+    bankAction = actions;
   }
 
-  if (uobCandidateGroups.length) {
-    const uobWrap = document.createElement("div");
-    uobWrap.className = "chain-tree-actions";
-    for (const group of uobCandidateGroups) {
-      const candidates = Array.isArray(group?.candidates) ? group.candidates : [];
-      if (!candidates.length) continue;
-      const details = document.createElement("details");
-      details.className = "chain-uob-candidates";
-      const summary = document.createElement("summary");
-      const amount = group?.rv_bank_row?.amount_raw || group?.rv_bank_row?.amount || "";
-      summary.textContent = `${group.status === "ambiguous_match" ? "เลือก UOB" : "UOB match"}${amount ? ` • ${amount}` : ""} (${candidates.length})`;
-      details.appendChild(summary);
-      for (const candidate of candidates) {
-        const item = document.createElement("div");
-        item.className = "chain-uob-candidate";
-        const label = [
+  if (kbankCandidateGroups.length || uobCandidateGroups.length) {
+    const bankWrap = document.createElement("div");
+    bankWrap.className = "chain-tree-actions";
+    if (kbankCandidateGroups.length) {
+      appendBankCandidateGroups(bankWrap, kbankCandidateGroups, voucherNumber, {
+        bankLabel: "KBank",
+        confirmUnique: confirmUniqueKbankCandidates,
+        confirm: confirmKbankCandidate,
+        unconfirm: unconfirmKbankCandidate,
+        highlightedUrl: kbankCandidateHighlightedPageUrl,
+        candidateLabel: (candidate) => [
+          candidate.statement_key || "KBank",
+          (candidate.source_line || "").split("\n")[0],
+          candidate.amount_raw || candidate.amount || "",
+          candidate.matched_check_no || "",
+          candidate.confirmed ? "confirmed" : "",
+        ].filter(Boolean).join(" • "),
+      });
+    }
+    if (uobCandidateGroups.length) {
+      appendBankCandidateGroups(bankWrap, uobCandidateGroups, voucherNumber, {
+        bankLabel: "UOB",
+        confirmUnique: confirmUniqueUobCandidates,
+        confirm: confirmUobCandidate,
+        unconfirm: unconfirmUobCandidate,
+        highlightedUrl: uobHighlightedPageUrl,
+        candidateLabel: (candidate) => [
           candidate.statement_key || "UOB",
           candidate.transaction_time || "",
           candidate.amount_raw || candidate.amount || "",
           candidate.customer_ref || candidate.transaction_ref || "",
-        ].filter(Boolean).join(" • ");
-        const text = document.createElement("div");
-        text.className = "chain-tree-node-meta";
-        text.textContent = label;
-        item.appendChild(text);
-        const actions = document.createElement("div");
-        actions.className = "chain-tree-actions";
-        if (candidate.page_pdf_url) {
-          actions.appendChild(makePdfLink(candidate.page_pdf_url, "เปิดหน้า UOB", "secondary-btn chain-tree-view-btn"));
-        }
-        if (candidate.pdf_url) {
-          actions.appendChild(makePdfLink(candidate.pdf_url, "เปิด Statement", "secondary-btn chain-tree-view-btn"));
-        }
-        item.appendChild(actions);
-        details.appendChild(item);
-      }
-      uobWrap.appendChild(details);
+          candidate.confirmed ? "confirmed" : "",
+        ].filter(Boolean).join(" • "),
+      });
     }
-    if (uobWrap.children.length) content.appendChild(uobWrap);
+    if (bankWrap.children.length) content.appendChild(bankWrap);
   }
 
   row.append(marker, content);
@@ -785,6 +1082,12 @@ function renderChainTree(chains) {
     rootKey.textContent = chain.voucher_number || chain.key || "-";
     summaryMain.append(rootType, rootKey);
 
+    const status = summarizeChainStatus(chain);
+    const pills = document.createElement("span");
+    pills.className = "chain-tree-root-pills";
+    pills.append(...buildStatusPills(status, { includeOverall: true }));
+    summaryMain.appendChild(pills);
+
     const rootMeta = document.createElement("span");
     rootMeta.className = "chain-tree-root-meta";
     rootMeta.textContent = `${Number(chain.chain_page_count || 0)} หน้า`;
@@ -812,13 +1115,21 @@ function renderChainTree(chains) {
     const bankAccountNos = parseRefList(chain.refs && chain.refs.bank_account_no);
     const checkNos = parseRefList(chain.refs && chain.refs.check_no);
     const billNos = parseRefList(chain.refs && chain.refs.bill_no);
-    const kbankPages = Array.isArray(chain.kbank_page_bridges) ? chain.kbank_page_bridges : [];
+    const kbankCandidateGroups = Array.isArray(chain.kbank_candidate_bridges) ? chain.kbank_candidate_bridges : [];
     const uobCandidateGroups = Array.isArray(chain.uob_candidate_bridges) ? chain.uob_candidate_bridges : [];
 
-    if (bankCodes.length || bankAccountNos.length || checkNos.length || billNos.length || kbankPages.length || uobCandidateGroups.length) {
+    if (bankCodes.length || bankAccountNos.length || checkNos.length || billNos.length || kbankCandidateGroups.length || uobCandidateGroups.length) {
       const bankBranch = document.createElement("div");
       bankBranch.className = "chain-tree-branch";
-      bankBranch.appendChild(makeBankBranchNode(bankCodes, bankAccountNos, checkNos, billNos, kbankPages, uobCandidateGroups));
+      bankBranch.appendChild(makeBankBranchNode(
+        bankCodes,
+        bankAccountNos,
+        checkNos,
+        billNos,
+        kbankCandidateGroups,
+        uobCandidateGroups,
+        chain.voucher_number || chain.key || ""
+      ));
       branches.appendChild(bankBranch);
     }
 
@@ -849,8 +1160,13 @@ function summarizeChainStatus(chain) {
       invoiceRefs: Number(summary.invoice_refs || 0),
       resolvedInvoices: Number(summary.resolved_invoices || 0),
       unresolvedInvoices: Number(summary.unresolved_invoices || 0),
+      creditMemoCount: Number(summary.credit_memo_count || 0),
       bankPages: Number(summary.bank_pages || 0),
+      bankCandidates: Number(summary.bank_candidates || 0),
+      kbankCandidates: Number(summary.kbank_candidates || 0),
+      kbankConfirmed: Number(summary.kbank_confirmed || 0),
       uobCandidates: Number(summary.uob_candidates || 0),
+      uobConfirmed: Number(summary.uob_confirmed || 0),
       invoiceComplete: Boolean(summary.invoice_complete),
       bankComplete: Boolean(summary.bank_complete),
       overallComplete: Boolean(summary.overall_complete),
@@ -859,26 +1175,86 @@ function summarizeChainStatus(chain) {
 
   const invoiceBridges = Array.isArray(chain.invoice_bridges) ? chain.invoice_bridges : [];
   const unresolvedInvoices = Array.isArray(chain.unresolved_invoice_refs) ? chain.unresolved_invoice_refs : [];
-  const kbankPages = Array.isArray(chain.kbank_page_bridges) ? chain.kbank_page_bridges : [];
+  const kbankCandidateGroups = Array.isArray(chain.kbank_candidate_bridges) ? chain.kbank_candidate_bridges : [];
   const uobCandidateGroups = Array.isArray(chain.uob_candidate_bridges) ? chain.uob_candidate_bridges : [];
+  const kbankCandidates = kbankCandidateGroups.reduce((sum, group) => {
+    return sum + (Array.isArray(group?.candidates) ? group.candidates.length : 0);
+  }, 0);
+  const kbankConfirmed = kbankCandidateGroups.filter((group) => group?.status === "confirmed").length;
   const uobCandidates = uobCandidateGroups.reduce((sum, group) => {
     return sum + (Array.isArray(group?.candidates) ? group.candidates.length : 0);
   }, 0);
+  const uobConfirmed = uobCandidateGroups.filter((group) => group?.status === "confirmed").length;
   const resolvedInvoices = invoiceBridges.filter((bridge) => bridge && bridge.resolved && bridge.invoice).length;
   const totalInvoiceRefs = invoiceBridges.length + unresolvedInvoices.length;
   const invoiceComplete = totalInvoiceRefs > 0 && unresolvedInvoices.length === 0;
-  const bankComplete = kbankPages.length > 0;
+  const creditMemoCount = invoiceBridges.reduce((sum, bridge) => {
+    if (!bridge?.resolved || !bridge.invoice) return sum;
+    const memos = Array.isArray(bridge.invoice.credit_memos) ? bridge.invoice.credit_memos : [];
+    return sum + memos.length;
+  }, 0);
+  const bankComplete = kbankConfirmed > 0 || uobConfirmed > 0;
   const overallComplete = invoiceComplete && bankComplete;
   return {
     invoiceRefs: totalInvoiceRefs,
     resolvedInvoices,
     unresolvedInvoices: unresolvedInvoices.length,
-    bankPages: kbankPages.length,
+    creditMemoCount,
+    bankPages: kbankConfirmed,
+    bankCandidates: uobCandidateGroups.length + kbankCandidateGroups.length,
+    kbankCandidates,
+    kbankConfirmed,
     uobCandidates,
+    uobConfirmed,
     invoiceComplete,
     bankComplete,
     overallComplete,
   };
+}
+
+function buildStatusPills(status, { includeOverall = false } = {}) {
+  const pills = [];
+  pills.push(
+    makeStatusPill(
+      status.invoiceComplete
+        ? `Invoice ${status.resolvedInvoices}/${status.invoiceRefs}`
+        : `Invoice ${status.resolvedInvoices}/${status.invoiceRefs} • ขาด ${status.unresolvedInvoices}`,
+      status.invoiceComplete ? "ready" : "warning"
+    )
+  );
+  const pendingCandidates = (status.kbankCandidates || 0) + (status.uobCandidates || 0);
+  // bankCandidates counts distinct unresolved groups (one per check_no /
+  // bank row still ambiguous); pendingCandidates counts the total pages
+  // across all of them. Showing both as separate pills with different
+  // numbers read as a mismatch rather than two views of the same thing, so
+  // fold the group count into the same pill - and only mention it at all
+  // once there's more than one group, since "1 group" is implied and just
+  // adds noise in the common single-group case.
+  const pendingGroups = status.bankCandidates || 0;
+  pills.push(
+    makeStatusPill(
+      status.bankComplete
+        ? status.bankPages
+          ? `Bank ${status.bankPages} page${status.uobConfirmed ? ` • UOB confirmed ${status.uobConfirmed}` : ""}`
+          : `UOB confirmed ${status.uobConfirmed}`
+        : pendingCandidates
+          ? `Bank ยังไม่ยืนยัน • candidates ${pendingCandidates}${pendingGroups > 1 ? ` (${pendingGroups} รายการ)` : ""}`
+          : "Bank ยังไม่เจอ",
+      status.bankComplete ? "ready" : "warning"
+    )
+  );
+  if (status.creditMemoCount) {
+    pills.push(makeStatusPill(`Credit Memo ${status.creditMemoCount}`, "empty"));
+  }
+  if (includeOverall) {
+    pills.push(
+      makeStatusPill(
+        status.overallComplete ? "ครบทั้งชุด" : "ยังไม่ครบทั้งชุด",
+        status.overallComplete ? "ready" : "warning"
+      )
+    );
+  }
+  return pills;
 }
 
 function applyMappingStatusFilter(chains) {
@@ -899,94 +1275,18 @@ function makeStatusPill(label, tone) {
   return pill;
 }
 
-function renderChainMap(chains) {
-  const panel = document.getElementById("chainMap");
-  panel.innerHTML = "";
-
-  if (!Array.isArray(chains) || chains.length === 0) {
-    setSummaryStatus("chainMapCount", "ค้นหาเสร็จแล้ว • ไม่พบ chain", "empty");
-    const empty = document.createElement("div");
-    empty.className = "chain-empty";
-    empty.textContent = "ยังไม่ได้ค้นหา";
-    panel.appendChild(empty);
-    return;
-  }
-
-  const completed = chains.filter((chain) => summarizeChainStatus(chain).overallComplete).length;
-  setSummaryStatus("chainMapCount", `ครบถึงธนาคาร ${completed}/${chains.length}`, completed ? "ready" : "empty");
-
-  for (const chain of chains) {
-    const status = summarizeChainStatus(chain);
-    const card = document.createElement("div");
-    card.className = "mapping-card";
-
-    const header = document.createElement("div");
-    header.className = "mapping-card-header";
-
-    const title = document.createElement("div");
-    title.className = "mapping-card-title";
-    const rvType = document.createElement("span");
-    rvType.className = "chain-tree-type chain-tree-type-root";
-    rvType.textContent = "RV";
-    const rvKey = document.createElement("strong");
-    rvKey.textContent = chain.voucher_number || chain.key || "-";
-    title.append(rvType, rvKey);
-
-    const overall = makeStatusPill(
-      status.overallComplete ? "ครบถึงธนาคาร" : "ยังไม่ครบ",
-      status.overallComplete ? "ready" : "warning"
-    );
-
-    header.append(title, overall);
-
-    const facts = document.createElement("div");
-    facts.className = "mapping-facts";
-    facts.append(
-      makeStatusPill(
-        status.invoiceComplete
-          ? `Invoice ${status.resolvedInvoices}/${status.invoiceRefs}`
-          : `Invoice ${status.resolvedInvoices}/${status.invoiceRefs} • ขาด ${status.unresolvedInvoices}`,
-        status.invoiceComplete ? "ready" : "warning"
-      ),
-      makeStatusPill(
-        status.bankComplete
-          ? `Bank ${status.bankPages} page${status.uobCandidates ? ` • UOB ${status.uobCandidates}` : ""}`
-          : status.uobCandidates
-            ? `Bank ยังไม่ยืนยัน • UOB ${status.uobCandidates}`
-            : "Bank ยังไม่เจอ",
-        status.bankComplete ? "ready" : "warning"
-      )
-    );
-
-    const meta = document.createElement("div");
-    meta.className = "mapping-meta";
-    meta.textContent = makeChainMeta([
-      chain.refs?.check_no ? `Check No.: ${chain.refs.check_no}` : "",
-      chain.refs?.invoice_no ? `Invoice No.: ${chain.refs.invoice_no}` : "",
-      status.bankPages ? `Matched bank pages: ${status.bankPages}` : "",
-      status.uobCandidates ? `UOB candidates: ${status.uobCandidates}` : "",
-    ]);
-
-    const actions = document.createElement("div");
-    actions.className = "mapping-actions";
-    if (chain.chain_pdf_url) {
-      actions.appendChild(
-        makePdfLink(
-          chain.chain_pdf_url,
-          `เปิด PDF รวม • ${Number(chain.chain_page_count || 0)} หน้า`,
-          "secondary-btn chain-view-btn"
-        )
-      );
-    }
-
-    card.append(header, facts, meta, actions);
-    panel.appendChild(card);
-  }
-}
-
-function renderChainJson(chains) {
+function renderChainJson(payload) {
   const output = document.getElementById("chainJson");
+  const groups = normalizeChainJsonView(payload);
+  const chains = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.chains)
+      ? payload.chains
+      : Array.isArray(latestChainPayload)
+        ? latestChainPayload
+        : [];
   if (!Array.isArray(chains) || chains.length === 0) {
+    latestChainJsonPayload = groups || groupChainsForJson([]);
     setSummaryStatus("chainJsonCount", "ค้นหาเสร็จแล้ว • ไม่พบ chain", "empty");
     output.innerHTML = "";
     const empty = document.createElement("div");
@@ -996,18 +1296,51 @@ function renderChainJson(chains) {
     return;
   }
 
-  const grouped = groupChainsForJson(chains);
+  const grouped = groups || groupChainsForJson(chains);
+  latestChainJsonPayload = grouped;
   setSummaryStatus("chainJsonCount", `${chains.length} ชุดข้อมูล`, "ready");
   output.innerHTML = "";
   output.appendChild(renderJsonNode(grouped, null, 0));
 }
 
+function normalizeChainJsonView(payload) {
+  if (payload && typeof payload === "object" && !Array.isArray(payload) && payload.json_view) {
+    return payload.json_view;
+  }
+  if (payload && typeof payload === "object" && !Array.isArray(payload) && payload.summary && Array.isArray(payload.complete) && Array.isArray(payload.incomplete)) {
+    return payload;
+  }
+  return null;
+}
+
 function groupChainsForJson(chains) {
-  const items = Array.isArray(chains) ? chains : [];
+  const items = Array.isArray(chains)
+    ? chains
+    : Array.isArray(chains?.chains)
+      ? chains.chains
+      : [];
   const complete = [];
   const incomplete = [];
+  const candidateBankStatements = [];
   for (const chain of items) {
     const status = chain?.mapping_status === "complete" ? "complete" : "incomplete";
+    const kbankCandidateGroups = Array.isArray(chain?.kbank_candidate_bridges) ? chain.kbank_candidate_bridges : [];
+    const uobCandidateGroups = Array.isArray(chain?.uob_candidate_bridges) ? chain.uob_candidate_bridges : [];
+    const kbankCandidates = kbankCandidateGroups.reduce((sum, group) => sum + (Array.isArray(group?.candidates) ? group.candidates.length : 0), 0);
+    const uobCandidates = uobCandidateGroups.reduce((sum, group) => sum + (Array.isArray(group?.candidates) ? group.candidates.length : 0), 0);
+    const candidateCount = kbankCandidateGroups.length + uobCandidateGroups.length;
+    const candidateChoiceCount = kbankCandidates + uobCandidates;
+    if (candidateChoiceCount > 1) {
+      candidateBankStatements.push({
+        voucher_number: chain?.voucher_number || chain?.key || "",
+        status: chain?.mapping_status || status,
+        bank_candidates: candidateCount,
+        candidate_choices: candidateChoiceCount,
+        kbank_candidates: kbankCandidates,
+        uob_candidates: uobCandidates,
+        bank_complete: Boolean(chain?.mapping_summary?.bank_complete),
+      });
+    }
     if (status === "complete") complete.push(chain);
     else incomplete.push(chain);
   }
@@ -1020,11 +1353,13 @@ function groupChainsForJson(chains) {
       total,
       complete: completeCount,
       incomplete: incompleteCount,
+      candidate_bank_statements: candidateBankStatements.length,
       completion_rate: total ? Number(((completeCount / total) * 100).toFixed(2)) : 0,
     },
     complete,
     incomplete,
-  }
+    candidate_bank_statements: candidateBankStatements,
+  };
   return grouped;
 }
 
@@ -1058,7 +1393,6 @@ function renderJsonNode(value, key = null, depth = 0) {
 
   const details = document.createElement("details");
   details.className = "json-node";
-  details.open = depth < 2;
 
   const summary = document.createElement("summary");
   summary.className = "json-summary";
@@ -1095,8 +1429,7 @@ function renderJsonNode(value, key = null, depth = 0) {
 }
 
 async function copyChainJson() {
-  const payload = Array.isArray(latestChainPayload) ? latestChainPayload : [];
-  const text = JSON.stringify(groupChainsForJson(payload), null, 2);
+  const text = JSON.stringify(latestChainJsonPayload || groupChainsForJson(latestChainPayload), null, 2);
   try {
     if (navigator.clipboard && window.isSecureContext) {
       await navigator.clipboard.writeText(text);
@@ -1111,7 +1444,8 @@ async function copyChainJson() {
       document.execCommand("copy");
       document.body.removeChild(textArea);
     }
-    setSummaryStatus("chainJsonCount", payload.length ? `คัดลอก JSON แล้ว • ${payload.length} ชุดข้อมูล` : "คัดลอก JSON แล้ว • 0 ชุดข้อมูล", payload.length ? "ready" : "empty");
+    const payloadCount = Array.isArray(latestChainPayload) ? latestChainPayload.length : 0;
+    setSummaryStatus("chainJsonCount", payloadCount ? `คัดลอก JSON แล้ว • ${payloadCount} ชุดข้อมูล` : "คัดลอก JSON แล้ว • 0 ชุดข้อมูล", payloadCount ? "ready" : "empty");
     pulseSummaryStatus("chainJsonCount");
   } catch {
     setSummaryStatus("chainJsonCount", "คัดลอก JSON ไม่สำเร็จ", "warning");
@@ -1311,7 +1645,7 @@ async function runSearch() {
   showLoading("กำลังค้นหา… / Searching…");
   try {
     const query = buildQuery().toString();
-    const chainRes = await fetch(`${chainApiBase}?${query}`);
+    const chainRes = await fetch(`${chainApiBase}?${query ? `${query}&` : ""}include_json_view=1`);
     const chainPayload = await parseResponse(chainRes);
     if (!chainRes.ok) {
       const detail = chainPayload.detail || "ค้นหาไม่สำเร็จ";
@@ -1321,13 +1655,18 @@ async function runSearch() {
       renderChainJson([]);
       return;
     }
-    const rawChains = Array.isArray(chainPayload) ? chainPayload : [];
+    const rawChains = Array.isArray(chainPayload)
+      ? chainPayload
+      : Array.isArray(chainPayload?.chains)
+        ? chainPayload.chains
+        : [];
+    const jsonView = normalizeChainJsonView(chainPayload) || groupChainsForJson(rawChains);
     const chains = applyMappingStatusFilter(rawChains);
+    const renderedJsonView = chains.length === rawChains.length ? jsonView : groupChainsForJson(chains);
     latestChainPayload = chains;
-    renderChainMap(chains);
+    latestChainJsonPayload = renderedJsonView;
     renderChainTree(chains);
-    renderChainJson(chains);
-    pulseSummaryStatus("chainMapCount");
+    renderChainJson({ chains, json_view: renderedJsonView });
     pulseSummaryStatus("chainTreeCount");
     pulseSummaryStatus("chainJsonCount");
     saveLandingState({
@@ -1335,6 +1674,7 @@ async function runSearch() {
       cachedChainQueryKey: getLandingQueryKey(),
       cachedChain: chains,
       cachedRawChain: rawChains,
+      cachedChainJson: jsonView,
       cachedChainAt: Date.now(),
     });
   } finally {
@@ -1358,7 +1698,6 @@ for (const id of landingStateFields) {
 }
 
 document.getElementById("advancedPanel").addEventListener("toggle", () => saveLandingState());
-document.getElementById("chainMapAccordion").addEventListener("toggle", () => saveLandingState());
 document.getElementById("chainTreeAccordion").addEventListener("toggle", () => saveLandingState());
 document.getElementById("chainJsonAccordion").addEventListener("toggle", () => saveLandingState());
 document.getElementById("copyJsonBtn").addEventListener("click", () => void copyChainJson());
@@ -2002,9 +2341,11 @@ window.addEventListener("pagehide", () => saveUploadState());
 const currentQueryKey = getLandingQueryKey();
 if (navigationType === "back_forward" && Array.isArray(landingState.cachedChain) && landingState.cachedChainQueryKey === currentQueryKey) {
   latestChainPayload = landingState.cachedChain;
-  renderChainMap(landingState.cachedChain);
+  latestChainJsonPayload = landingState.cachedChainJson && typeof landingState.cachedChainJson === "object"
+    ? landingState.cachedChainJson
+    : groupChainsForJson(landingState.cachedChain);
   renderChainTree(landingState.cachedChain);
-  renderChainJson(landingState.cachedChain);
+  renderChainJson({ chains: landingState.cachedChain, json_view: latestChainJsonPayload });
 }
 
 if (navigationType === "back_forward" && Array.isArray(landingState.cachedHistory) && landingState.cachedHistory.length > 0) {

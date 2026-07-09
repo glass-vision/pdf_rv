@@ -37,7 +37,18 @@ TRANSACTION_ID_RE = re.compile(r"\b\d{10}\b")
 # e.g. 04B04B1A7570557. Keeping this shape explicit prevents compacted header
 # labels and account/branch names from being treated as transaction refs.
 TRANSACTION_REF_RE = re.compile(r"\b\d{2}B\d{2}B[A-Z0-9]{6,15}\b", re.IGNORECASE)
-CUSTOMER_REF_RE = re.compile(r"\b[A-Z0-9]{8,30}013807\b", re.IGNORECASE)
+# Real UOB customer/deposit-slip refs end in a six-character numeric suffix
+# whose last three digits are the fixed "807" system marker. The first three
+# suffix digits vary by branch/channel (e.g. 013807, 022807, 613807), so the
+# customer_code contract is "customer_ref minus the trailing NNN807 suffix".
+# The numeric-prefix branch requires 8+ digits (not 9+): real refs include
+# 14-char values with only an 8-digit prefix (e.g. 10202401013807), which a
+# 9+ minimum silently drops.
+CUSTOMER_REF_SUFFIX_LENGTH = 6
+CUSTOMER_REF_RE = re.compile(
+    r"\b(?:(?=[A-Z0-9]*[A-Z])[A-Z0-9]{3,30}|\d{8,30})(?:\d{3}807)\b",
+    re.IGNORECASE,
+)
 TRANSACTION_TYPE_RE = re.compile(r"\b(?:MISC|TRF|CHQ|CASH|FEE|INT)(?:\s+[A-Z]{2,12}){0,3}\b", re.IGNORECASE)
 MONEY_VALUE_RE = r"-?\d{1,3}(?:,\d{3})*\.\d{2}|-?\d+\.\d{2}"
 UOB_TRANSACTION_START_RE = re.compile(
@@ -127,6 +138,12 @@ def normalize_money(value: str) -> str:
     return f"{Decimal(value.replace(',', '').strip()):.2f}"
 
 
+def customer_code_from_ref(customer_ref: str) -> str | None:
+    if len(customer_ref) <= CUSTOMER_REF_SUFFIX_LENGTH:
+        return None
+    return customer_ref[:-CUSTOMER_REF_SUFFIX_LENGTH]
+
+
 def derive_statement_key(account_number: str, period_from: str, period_to: str) -> str:
     return f"UOB-CA-{normalize_ref(account_number)}-{period_from.replace('-', '')}-{period_to.replace('-', '')}"
 
@@ -170,7 +187,7 @@ def _build_transaction(row_order: int, lines: list[str]) -> UobCaStatementTransa
     transaction_ref = transaction_ref_match.group(0).upper() if transaction_ref_match else None
     customer_ref_match = CUSTOMER_REF_RE.search(source_line.upper())
     customer_ref = customer_ref_match.group(0).upper() if customer_ref_match else None
-    customer_code = customer_ref[:-6] if customer_ref and len(customer_ref) > 6 else None
+    customer_code = customer_code_from_ref(customer_ref) if customer_ref else None
 
     return UobCaStatementTransaction(
         row_order=row_order,
@@ -286,13 +303,17 @@ def _extract_transaction_refs(
     transaction_ids = {
         v for v in TRANSACTION_ID_RE.findall(text) if normalize_ref(v) not in excluded
     }
-    customer_refs = {v.upper() for v in CUSTOMER_REF_RE.findall(text)}
+    customer_refs = _extract_customer_refs(text)
     transaction_refs = {
         v for v in TRANSACTION_REF_RE.findall(text.upper())
         if v not in customer_refs and v not in excluded
     }
     transaction_types = {v.upper() for v in TRANSACTION_TYPE_RE.findall(text)}
-    customer_codes = {v[:-6] for v in customer_refs if len(v) > 6}
+    customer_codes = {
+        customer_code
+        for customer_ref in customer_refs
+        if (customer_code := customer_code_from_ref(customer_ref))
+    }
     if transaction_ids:
         refs["transaction_id"] = transaction_ids
     if transaction_refs:
@@ -304,6 +325,22 @@ def _extract_transaction_refs(
     if transaction_types:
         refs["transaction_type"] = transaction_types
     return refs
+
+
+def _extract_customer_refs(text: str) -> set[str]:
+    transactions = extract_uob_ca_statement_transactions(text)
+    sources = [transaction.source_line for transaction in transactions]
+    if not sources:
+        sources = [
+            line
+            for line in (raw_line.strip() for raw_line in text.replace("\r", "\n").split("\n"))
+            if line and (TRANSACTION_REF_RE.search(line.upper()) or TRANSACTION_ID_RE.search(line))
+        ]
+    return {
+        match.group(0).upper()
+        for source in sources
+        for match in CUSTOMER_REF_RE.finditer(source.upper())
+    }
 
 
 def extract_uob_ca_statement_header(text: str) -> UobCaStatementHeader:

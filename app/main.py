@@ -24,6 +24,7 @@ from app.routers.receive_vouchers import (
 from app.routers.uob_ca_statements import router as uob_ca_statement_router
 from app.database import db_session
 from app.services.pdf_assembler import assemble_pdf
+from app.services.pdf_highlighter import highlight_pdf_row
 from app.services.document_core import fetch_document_page_by_order, fetch_document_root
 from app.services.storage import read_pdf_from_storage
 from app.services.upload_worker import start_upload_worker, stop_upload_worker
@@ -229,61 +230,158 @@ def _read_statement_page_pdf(conn, doc_type: str, root_key: str, page_order: int
     return read_pdf_from_storage(page["page_pdf"], page["page_pdf_path"])
 
 
-def _normalize_check_no_for_match(value: str | None) -> str | None:
-    if not value:
-        return None
-    normalized = re.sub(r"\s+", "", str(value).strip().upper())
-    normalized = re.sub(r"#\d+$", "", normalized)
-    normalized = re.sub(r"-\d+$", "", normalized)
-    return normalized or None
-
-
-def _normalize_bank_code_for_match(value: str | None) -> str | None:
-    if not value:
-        return None
-    normalized = re.sub(r"[^A-Z0-9]", "", str(value).strip().upper())
-    return normalized or None
-
-
-def _allows_kbank_page_match(root: dict[str, Any]) -> bool:
-    bank_codes: set[str] = set()
-    refs = root.get("refs") or {}
-    for raw_value in str(refs.get("bank_code") or "").split(","):
-        normalized = _normalize_bank_code_for_match(raw_value)
-        if normalized:
-            bank_codes.add(normalized)
-    for bank_row in root.get("bank_rows") or []:
-        normalized = _normalize_bank_code_for_match(bank_row.get("bank_code"))
-        if normalized:
-            bank_codes.add(normalized)
-    if not bank_codes:
-        return True
-    return bool(bank_codes & {"KBANK", "KASIKORN", "KASIKORNBANK"})
-
-
 def _build_mapping_summary(root_payload: dict[str, Any]) -> dict[str, Any]:
     invoice_bridges = list(root_payload.get("invoice_bridges") or [])
     unresolved_invoice_refs = list(root_payload.get("unresolved_invoice_refs") or [])
-    kbank_page_bridges = list(root_payload.get("kbank_page_bridges") or [])
+    kbank_candidate_bridges = list(root_payload.get("kbank_candidate_bridges") or [])
     uob_candidate_bridges = list(root_payload.get("uob_candidate_bridges") or [])
     resolved_invoices = sum(1 for bridge in invoice_bridges if bridge.get("resolved") and bridge.get("invoice"))
     invoice_refs = len(invoice_bridges) + len(unresolved_invoice_refs)
     invoice_complete = invoice_refs > 0 and not unresolved_invoice_refs
-    bank_pages = len(kbank_page_bridges)
+    credit_memo_count = sum(
+        len((bridge.get("invoice") or {}).get("credit_memos") or [])
+        for bridge in invoice_bridges
+        if bridge.get("resolved") and bridge.get("invoice")
+    )
+    kbank_candidates = sum(len(item.get("candidates") or []) for item in kbank_candidate_bridges)
+    kbank_confirmed = sum(1 for item in kbank_candidate_bridges if item.get("status") == "confirmed")
     uob_candidates = sum(len(item.get("candidates") or []) for item in uob_candidate_bridges)
-    bank_complete = bank_pages > 0
+    uob_confirmed = sum(1 for item in uob_candidate_bridges if item.get("status") == "confirmed")
+    # `bank_pages` counts confirmed bank evidence only (KBank check_no matches
+    # and UOB account+amount matches both go through the same candidate/
+    # confirm flow - ambiguous matches require a manual pick, matching
+    # candidates alone do not mark the Bank branch complete).
+    bank_pages = kbank_confirmed
+    bank_candidates = len(uob_candidate_bridges) + len(kbank_candidate_bridges)
+    bank_complete = bank_pages > 0 or uob_confirmed > 0
     overall_complete = invoice_complete and bank_complete
     return {
         "invoice_refs": invoice_refs,
         "resolved_invoices": resolved_invoices,
         "unresolved_invoices": len(unresolved_invoice_refs),
+        "credit_memo_count": credit_memo_count,
         "bank_pages": bank_pages,
+        "bank_candidates": bank_candidates,
+        "kbank_candidate_groups": len(kbank_candidate_bridges),
+        "kbank_candidates": kbank_candidates,
+        "kbank_confirmed": kbank_confirmed,
         "uob_candidate_groups": len(uob_candidate_bridges),
         "uob_candidates": uob_candidates,
+        "uob_confirmed": uob_confirmed,
         "invoice_complete": invoice_complete,
         "bank_complete": bank_complete,
         "overall_complete": overall_complete,
     }
+
+
+def _build_chain_json_view(chains: list[dict[str, Any]]) -> dict[str, Any]:
+    complete: list[dict[str, Any]] = []
+    incomplete: list[dict[str, Any]] = []
+    candidate_bank_statements: list[dict[str, Any]] = []
+
+    for chain in chains:
+        status = chain.get("mapping_status") or (
+            "complete" if chain.get("mapping_summary", {}).get("overall_complete") else "incomplete"
+        )
+        kbank_candidate_bridges = list(chain.get("kbank_candidate_bridges") or [])
+        uob_candidate_bridges = list(chain.get("uob_candidate_bridges") or [])
+        kbank_candidates = sum(len(item.get("candidates") or []) for item in kbank_candidate_bridges)
+        uob_candidates = sum(len(item.get("candidates") or []) for item in uob_candidate_bridges)
+        candidate_choices = kbank_candidates + uob_candidates
+        bank_candidates = len(kbank_candidate_bridges) + len(uob_candidate_bridges)
+        if candidate_choices > 1:
+            candidate_bank_statements.append(
+                {
+                    "voucher_number": chain.get("voucher_number") or chain.get("key") or "",
+                    "status": status,
+                    "bank_candidates": bank_candidates,
+                    "candidate_choices": candidate_choices,
+                    "kbank_candidates": kbank_candidates,
+                    "uob_candidates": uob_candidates,
+                    "bank_complete": bool(chain.get("mapping_summary", {}).get("bank_complete")),
+                }
+            )
+        if status == "complete":
+            complete.append(chain)
+        else:
+            incomplete.append(chain)
+
+    total = len(chains)
+    complete_count = len(complete)
+    incomplete_count = len(incomplete)
+    return {
+        "summary": {
+            "total": total,
+            "complete": complete_count,
+            "incomplete": incomplete_count,
+            "candidate_bank_statements": len(candidate_bank_statements),
+            "completion_rate": total and round((complete_count / total) * 100, 2) or 0,
+        },
+        "complete": complete,
+        "incomplete": incomplete,
+        "candidate_bank_statements": candidate_bank_statements,
+    }
+
+
+def _confirmed_uob_page_refs(root_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    pages: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for bridge in root_payload.get("uob_candidate_bridges") or []:
+        for candidate in bridge.get("candidates") or []:
+            if not candidate.get("confirmed"):
+                continue
+            statement_key = candidate.get("statement_key")
+            page_order = candidate.get("page_order")
+            if not statement_key or not page_order:
+                continue
+            page_key = candidate.get("page_key") or candidate.get("key") or f"{statement_key}:{page_order}"
+            if page_key in seen:
+                continue
+            seen.add(page_key)
+            pages.append(
+                {
+                    "statement_key": statement_key,
+                    "page_order": int(page_order),
+                    "page_key": page_key,
+                    "row_order": int(candidate.get("row_order") or 1),
+                    "highlight_terms": [
+                        candidate.get("customer_ref"),
+                        candidate.get("transaction_ref"),
+                        candidate.get("transaction_id"),
+                        candidate.get("amount_raw"),
+                        candidate.get("amount"),
+                    ],
+                }
+            )
+    return pages
+
+
+def _confirmed_kbank_page_refs(root_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    pages: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for bridge in root_payload.get("kbank_candidate_bridges") or []:
+        for candidate in bridge.get("candidates") or []:
+            if not candidate.get("confirmed"):
+                continue
+            statement_key = candidate.get("statement_key")
+            page_order = candidate.get("page_order")
+            if not statement_key or not page_order:
+                continue
+            page_key = candidate.get("page_key") or candidate.get("key") or f"{statement_key}:{page_order}"
+            if page_key in seen:
+                continue
+            seen.add(page_key)
+            pages.append(
+                {
+                    "statement_key": statement_key,
+                    "statement_reference": statement_key,
+                    "page_order": int(page_order),
+                    "page_key": page_key,
+                    "row_order": int(candidate.get("row_order") or 1),
+                    "highlight_terms": candidate.get("highlight_terms") or [],
+                }
+            )
+    return pages
 
 
 def _load_workspace_chain(
@@ -315,15 +413,29 @@ def _load_workspace_chain(
             "pdf_url": f"/api/receive-vouchers/{root['voucher_number']}.pdf",
             "chain_pdf_url": f"/api/receive-vouchers/{root['voucher_number']}-chain.pdf",
             "invoice_bridges": [],
-            "kbank_page_bridges": [],
             "uob_candidate_bridges": [
                 {
                     "rv_bank_row": bank_row.get("uob_match", {}).get("rv_bank_row"),
                     "status": bank_row.get("uob_match", {}).get("status"),
+                    "match_rule": bank_row.get("uob_match", {}).get("match_rule"),
+                    "match_conditions": bank_row.get("uob_match", {}).get("match_conditions") or [],
+                    "selection_source": bank_row.get("uob_match", {}).get("selection_source"),
                     "candidates": bank_row.get("uob_match", {}).get("candidates") or [],
                 }
                 for bank_row in (root.get("bank_rows") or [])
                 if bank_row.get("uob_match") and bank_row.get("uob_match", {}).get("candidates")
+            ],
+            "kbank_candidate_bridges": [
+                {
+                    "rv_bank_row": bank_row.get("kbank_match", {}).get("rv_bank_row"),
+                    "status": bank_row.get("kbank_match", {}).get("status"),
+                    "match_rule": bank_row.get("kbank_match", {}).get("match_rule"),
+                    "match_conditions": bank_row.get("kbank_match", {}).get("match_conditions") or [],
+                    "selection_source": bank_row.get("kbank_match", {}).get("selection_source"),
+                    "candidates": bank_row.get("kbank_match", {}).get("candidates") or [],
+                }
+                for bank_row in (root.get("bank_rows") or [])
+                if bank_row.get("kbank_match") and bank_row.get("kbank_match", {}).get("candidates")
             ],
             "unresolved_invoice_refs": [],
             "invoices": [],
@@ -400,76 +512,6 @@ def _load_workspace_chain(
             for row in credit_memo_rows:
                 credit_memo_rows_by_invoice.setdefault(row["invoice_number"], []).append(dict(row))
 
-        kbank_page_matches_by_root: dict[str, list[dict[str, Any]]] = {}
-        rv_check_candidates: list[tuple[str, str, str]] = []
-        for root in roots:
-            if not _allows_kbank_page_match(root):
-                continue
-            for raw_value in str((root.get("refs") or {}).get("check_no", "")).split(","):
-                raw_value = raw_value.strip()
-                normalized_check = _normalize_check_no_for_match(raw_value)
-                if normalized_check:
-                    rv_check_candidates.append((root["id"], raw_value, normalized_check))
-
-        if rv_check_candidates:
-            normalized_checks = sorted({item[2] for item in rv_check_candidates})
-            page_rows = conn.execute(
-                f"""
-                SELECT
-                    kcr.check_no AS normalized_check_no,
-                    kcr.check_no AS check_no,
-                    kcr.amount AS amount,
-                    kcr.amount_raw AS amount_raw,
-                    dp.page_order,
-                    dp.raw_text,
-                    dr.id AS root_id,
-                    dr.root_key AS statement_reference,
-                    dr.root_date,
-                    dr.name AS account_name,
-                    dr.customer_code AS account_number,
-                    dr.assembled_page_count
-                FROM kbank_check_rows kcr
-                JOIN document_roots dr ON dr.id = kcr.document_root_id
-                JOIN document_pages dp
-                  ON dp.document_root_id = dr.id AND dp.page_order = kcr.page_order
-                WHERE dr.doc_type = 'kbank-statements'
-                  AND kcr.event_type = 'deposit'
-                  AND kcr.check_no IN ({_placeholders(len(normalized_checks))})
-                ORDER BY dr.root_date DESC, dr.root_key, dp.page_order
-                """,
-                normalized_checks,
-            ).fetchall()
-            pages_by_normalized_check: dict[str, list[dict[str, Any]]] = {}
-            for row in page_rows:
-                pages_by_normalized_check.setdefault(row["normalized_check_no"], []).append(dict(row))
-
-            seen_page_keys_by_root: dict[str, set[str]] = {}
-            for root_id, raw_value, normalized_check in rv_check_candidates:
-                for page in pages_by_normalized_check.get(normalized_check, []):
-                    page_key = f"{page['statement_reference']}:{page['page_order']}"
-                    seen = seen_page_keys_by_root.setdefault(root_id, set())
-                    if page_key in seen:
-                        continue
-                    seen.add(page_key)
-                    kbank_page_matches_by_root.setdefault(root_id, []).append(
-                        {
-                            "doc_type": "kbank-page",
-                            "key": page_key,
-                            "page_key": page_key,
-                            "statement_reference": page["statement_reference"],
-                            "page_order": page["page_order"],
-                            "assembled_page_count": 1,
-                            "pdf_url": f"/api/kbank-statements/pages/{page_key}.pdf",
-                            "name": page.get("account_name"),
-                            "customer_code": page.get("account_number"),
-                            "date": _display_date(page.get("root_date")),
-                            "matched_check_no": raw_value,
-                            "normalized_check_no": normalized_check,
-                            "amount": page.get("amount"),
-                            "amount_raw": page.get("amount_raw"),
-                        }
-                    )
-
     for link in invoice_links:
         root_id = link["root_id"]
         root_payload = root_payloads.get(root_id)
@@ -518,14 +560,9 @@ def _load_workspace_chain(
             for credit_memo in credit_memo_rows_by_invoice.get(invoice_number, [])
         )
 
-    for root_id, matches in kbank_page_matches_by_root.items():
-        root_payload = root_payloads.get(root_id)
-        if not root_payload:
-            continue
-        root_payload["kbank_page_bridges"] = matches
-        root_payload["chain_page_count"] += len(matches)
-
     for root_payload in root_payloads.values():
+        root_payload["chain_page_count"] += len(_confirmed_uob_page_refs(root_payload))
+        root_payload["chain_page_count"] += len(_confirmed_kbank_page_refs(root_payload))
         mapping_summary = _build_mapping_summary(root_payload)
         root_payload["mapping_summary"] = mapping_summary
         root_payload["mapping_status"] = "complete" if mapping_summary["overall_complete"] else "incomplete"
@@ -549,14 +586,21 @@ def workspace_chain(
     date_to: str | None = None,
     ref_type: str | None = None,
     ref_value: str | None = None,
+    include_json_view: bool = False,
 ):
-    return _load_workspace_chain(
+    chains = _load_workspace_chain(
         voucher_number=voucher_number,
         date_from=date_from,
         date_to=date_to,
         ref_type=ref_type,
         ref_value=ref_value,
     )
+    if include_json_view:
+        return {
+            "chains": chains,
+            "json_view": _build_chain_json_view(chains),
+        }
+    return chains
 
 
 @app.get("/api/workspace/quick-access/{doc_type}")
@@ -582,17 +626,35 @@ def _workspace_chain_pdf_response(voucher_number: str) -> Response:
                 pdf_parts.append(_read_chain_pdf(conn, "invoices", invoice["id"]))
                 for memo in invoice.get("credit_memos", []):
                     pdf_parts.append(_read_chain_pdf(conn, "credit-memos", memo["id"]))
-            for page in root.get("kbank_page_bridges", []):
+            for page in _confirmed_kbank_page_refs(root):
                 statement_reference = page.get("statement_reference")
                 page_order = page.get("page_order")
                 if not statement_reference or not page_order:
                     continue
+                page_pdf = _read_statement_page_pdf(
+                    conn,
+                    "kbank-statements",
+                    str(statement_reference),
+                    int(page_order),
+                )
+                row_order = page.get("row_order")
                 pdf_parts.append(
-                    _read_statement_page_pdf(
-                        conn,
-                        "kbank-statements",
-                        str(statement_reference),
-                        int(page_order),
+                    highlight_pdf_row(page_pdf, int(row_order), page.get("highlight_terms") or [])
+                    if row_order
+                    else page_pdf
+                )
+            for page in _confirmed_uob_page_refs(root):
+                page_pdf = _read_statement_page_pdf(
+                    conn,
+                    "uob-ca-statements",
+                    str(page["statement_key"]),
+                    int(page["page_order"]),
+                )
+                pdf_parts.append(
+                    highlight_pdf_row(
+                        page_pdf,
+                        int(page.get("row_order") or 1),
+                        page.get("highlight_terms") or [],
                     )
                 )
 

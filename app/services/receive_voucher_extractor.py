@@ -28,6 +28,10 @@ ACCOUNT_NO_RE = re.compile(r"\b\d{3}-\d-\d{5}-\d\b")
 VOUCHER_CANDIDATE_RE = re.compile(r"\b(?:QR|RV|R)\d{4,8}-\d{3,5}\b", re.IGNORECASE)
 # Invoice examples: SL2505-0023, FB2505-0003, S52205-0040, T52506-0030, QR2507-00109.
 DOC_NO_RE = re.compile(r"\b[A-Z]{1,3}\d{4,8}-\d{3,5}(?:\(\d+\))?\b", re.IGNORECASE)
+# The labeled "Invoice No. :" field itself, as opposed to any DOC_NO_RE-shaped
+# token anywhere in the text (which also matches the voucher's own number off
+# the "Voucher Number :" field on every single voucher).
+INVOICE_NO_LABEL_RE = re.compile(r"Invoice\s*No\.?\s*:\s*(\S+)", re.IGNORECASE)
 BILL_NO_RE = re.compile(r"\b[A-Z]\d{6,8}-\d{3,5}\b", re.IGNORECASE)
 BILL_NO_WRAP_PREFIX_RE = re.compile(r"^[A-Z]\d{6,8}-$", re.IGNORECASE)
 BILL_NO_WRAP_CONTINUATION_RE = re.compile(r"^\d{3,5}$")
@@ -464,8 +468,28 @@ def extract_refs(text: str, voucher_number: str) -> dict[str, set[str]]:
 
     for raw in DOC_NO_RE.findall(text):
         normalized = normalize_invoice_no(raw)
+        # DOC_NO_RE matches any document-number-shaped token anywhere in the
+        # text, including the voucher's own number off the "Voucher Number :"
+        # field that every voucher has - that match must stay excluded, or
+        # every single voucher would get a spurious self-referencing
+        # invoice_no ref. Handled separately below: only the labeled
+        # "Invoice No. :" field itself is allowed to keep a self-matching
+        # value.
         if normalized != voucher_norm and normalized not in bill_values:
             refs["invoice_no"].add(normalized)
+
+    for invoice_label_match in INVOICE_NO_LABEL_RE.finditer(text):
+        labeled_value = normalize_invoice_no(invoice_label_match.group(1))
+        if labeled_value == voucher_norm:
+            # Some source vouchers have their own voucher number typed into
+            # the "Invoice No." field - a data-entry mistake upstream, not a
+            # real invoice. Add it anyway rather than silently dropping it:
+            # since no Invoice document will ever have this Receive
+            # Voucher's own number as its root_key, this cannot create a
+            # real self-referencing chain edge - it will correctly surface
+            # as an unresolved invoice reference instead of looking
+            # identical to a voucher with no Invoice No. at all.
+            refs["invoice_no"].add(labeled_value)
 
     for value in bill_values:
         if value != voucher_norm:

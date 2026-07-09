@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Annotated, Callable
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, File, Header, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pypdf import PdfReader
 
@@ -22,6 +22,7 @@ from app.services.document_core import (
 )
 from app.services.browser_identity import normalize_client_id
 from app.services.pdf_assembler import assemble_pdf
+from app.services.pdf_highlighter import highlight_pdf_row
 from app.services.statement_importer import StatementImportResult
 from app.services.statement_upload_jobs import (
     UploadCancelled,
@@ -315,9 +316,17 @@ def create_statement_router(
 
     @router.get("/pages/{page_key}.pdf")
     @router.get("/pages/{page_key}/pdf")
-    def get_page_pdf(page_key: str):
+    def get_page_pdf(
+        page_key: str,
+        highlight_row: int | None = None,
+        highlight_text: list[str] | None = Query(default=None),
+    ):
         with db_session() as conn:
             normalized_key, page_order, pdf_bytes = _fetch_page_pdf_bytes(conn, page_key)
+        if highlight_row is not None:
+            if highlight_row < 1:
+                raise HTTPException(status_code=422, detail="highlight_row must be greater than zero")
+            pdf_bytes = highlight_pdf_row(pdf_bytes, highlight_row, highlight_text or [])
         filename = f"{normalized_key}:{page_order}.pdf"
         return Response(
             content=pdf_bytes,

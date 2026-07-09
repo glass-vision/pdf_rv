@@ -205,8 +205,75 @@ ON kbank_check_rows(document_root_id, page_order, row_order);
 CREATE INDEX IF NOT EXISTS idx_kbank_check_rows_check
 ON kbank_check_rows(check_no, event_type, amount);
 
+CREATE INDEX IF NOT EXISTS idx_kbank_check_rows_amount
+ON kbank_check_rows(event_type, amount);
+
 CREATE INDEX IF NOT EXISTS idx_uob_ca_statement_transactions_match
 ON uob_ca_statement_transactions(document_root_id, amount);
+
+CREATE TABLE IF NOT EXISTS rv_uob_confirmations (
+    id TEXT PRIMARY KEY,
+    rv_bank_row_id TEXT NOT NULL,
+    uob_statement_key TEXT NOT NULL,
+    uob_page_order INTEGER NOT NULL,
+    uob_row_order INTEGER NOT NULL,
+    match_rule TEXT,
+    match_conditions TEXT,
+    selection_source TEXT,
+    confirmed_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+
+    FOREIGN KEY (rv_bank_row_id)
+        REFERENCES receive_voucher_bank_rows(id)
+        ON DELETE CASCADE,
+
+    UNIQUE(rv_bank_row_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rv_uob_confirmations_statement_row
+ON rv_uob_confirmations(uob_statement_key, uob_page_order, uob_row_order);
+
+CREATE TABLE IF NOT EXISTS rv_uob_auto_confirm_suppressions (
+    rv_bank_row_id TEXT PRIMARY KEY,
+    suppressed_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+
+    FOREIGN KEY (rv_bank_row_id)
+        REFERENCES receive_voucher_bank_rows(id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS rv_kbank_confirmations (
+    id TEXT PRIMARY KEY,
+    rv_bank_row_id TEXT NOT NULL,
+    kbank_statement_key TEXT NOT NULL,
+    kbank_page_order INTEGER NOT NULL,
+    kbank_row_order INTEGER NOT NULL,
+    match_rule TEXT,
+    match_conditions TEXT,
+    selection_source TEXT,
+    confirmed_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+
+    FOREIGN KEY (rv_bank_row_id)
+        REFERENCES receive_voucher_bank_rows(id)
+        ON DELETE CASCADE,
+
+    UNIQUE(rv_bank_row_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rv_kbank_confirmations_statement_row
+ON rv_kbank_confirmations(kbank_statement_key, kbank_page_order, kbank_row_order);
+
+CREATE TABLE IF NOT EXISTS rv_kbank_auto_confirm_suppressions (
+    rv_bank_row_id TEXT PRIMARY KEY,
+    suppressed_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+
+    FOREIGN KEY (rv_bank_row_id)
+        REFERENCES receive_voucher_bank_rows(id)
+        ON DELETE CASCADE
+);
 
 CREATE TABLE IF NOT EXISTS upload_jobs (
     id TEXT PRIMARY KEY,
@@ -421,6 +488,8 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             ON kbank_check_rows(document_root_id, page_order, row_order);
             CREATE INDEX IF NOT EXISTS idx_kbank_check_rows_check
             ON kbank_check_rows(check_no, event_type, amount);
+            CREATE INDEX IF NOT EXISTS idx_kbank_check_rows_amount
+            ON kbank_check_rows(event_type, amount);
             """
         )
     if "uob_ca_statement_transactions" not in tables:
@@ -463,6 +532,106 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             ON uob_ca_statement_transactions(document_root_id, amount);
             """
         )
+    if "rv_uob_confirmations" not in tables:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS rv_uob_confirmations (
+                id TEXT PRIMARY KEY,
+                rv_bank_row_id TEXT NOT NULL,
+                uob_statement_key TEXT NOT NULL,
+                uob_page_order INTEGER NOT NULL,
+                uob_row_order INTEGER NOT NULL,
+                match_rule TEXT,
+                match_conditions TEXT,
+                selection_source TEXT,
+                confirmed_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+
+                FOREIGN KEY (rv_bank_row_id)
+                    REFERENCES receive_voucher_bank_rows(id)
+                    ON DELETE CASCADE,
+
+                UNIQUE(rv_bank_row_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_rv_uob_confirmations_statement_row
+            ON rv_uob_confirmations(uob_statement_key, uob_page_order, uob_row_order);
+            """
+        )
+    if "rv_uob_auto_confirm_suppressions" not in tables:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS rv_uob_auto_confirm_suppressions (
+                rv_bank_row_id TEXT PRIMARY KEY,
+                suppressed_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+
+                FOREIGN KEY (rv_bank_row_id)
+                    REFERENCES receive_voucher_bank_rows(id)
+                    ON DELETE CASCADE
+            );
+            """
+        )
+    if "rv_kbank_confirmations" not in tables:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS rv_kbank_confirmations (
+                id TEXT PRIMARY KEY,
+                rv_bank_row_id TEXT NOT NULL,
+                kbank_statement_key TEXT NOT NULL,
+                kbank_page_order INTEGER NOT NULL,
+                kbank_row_order INTEGER NOT NULL,
+                match_rule TEXT,
+                match_conditions TEXT,
+                selection_source TEXT,
+                confirmed_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+
+                FOREIGN KEY (rv_bank_row_id)
+                    REFERENCES receive_voucher_bank_rows(id)
+                    ON DELETE CASCADE,
+
+                UNIQUE(rv_bank_row_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_rv_kbank_confirmations_statement_row
+            ON rv_kbank_confirmations(kbank_statement_key, kbank_page_order, kbank_row_order);
+            """
+        )
+    if "rv_kbank_auto_confirm_suppressions" not in tables:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS rv_kbank_auto_confirm_suppressions (
+                rv_bank_row_id TEXT PRIMARY KEY,
+                suppressed_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+
+                FOREIGN KEY (rv_bank_row_id)
+                    REFERENCES receive_voucher_bank_rows(id)
+                    ON DELETE CASCADE
+            );
+            """
+        )
+
+    rv_uob_columns = {row["name"] for row in conn.execute("PRAGMA table_info(rv_uob_confirmations)")}
+    if "match_rule" not in rv_uob_columns:
+        conn.execute("ALTER TABLE rv_uob_confirmations ADD COLUMN match_rule TEXT")
+    if "match_conditions" not in rv_uob_columns:
+        conn.execute("ALTER TABLE rv_uob_confirmations ADD COLUMN match_conditions TEXT")
+    if "selection_source" not in rv_uob_columns:
+        conn.execute("ALTER TABLE rv_uob_confirmations ADD COLUMN selection_source TEXT")
+
+    rv_kbank_columns = {row["name"] for row in conn.execute("PRAGMA table_info(rv_kbank_confirmations)")}
+    if "match_rule" not in rv_kbank_columns:
+        conn.execute("ALTER TABLE rv_kbank_confirmations ADD COLUMN match_rule TEXT")
+    if "match_conditions" not in rv_kbank_columns:
+        conn.execute("ALTER TABLE rv_kbank_confirmations ADD COLUMN match_conditions TEXT")
+    if "selection_source" not in rv_kbank_columns:
+        conn.execute("ALTER TABLE rv_kbank_confirmations ADD COLUMN selection_source TEXT")
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_kbank_check_rows_amount ON kbank_check_rows(event_type, amount)"
+    )
     if "document_page_refs" not in tables:
         conn.executescript(
             """
